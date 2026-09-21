@@ -1,3 +1,6 @@
+window.FAMILYDRIVE_BASE_PATH = window.FAMILYDRIVE_BASE_PATH || "";
+window.familyDriveUrl = window.familyDriveUrl || ((path) => path);
+
 const themeButton = document.getElementById("themeButton");
 const themeIcon = document.getElementById("themeIcon");
 const themeText = document.getElementById("themeText");

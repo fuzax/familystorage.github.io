@@ -4,7 +4,7 @@
         : "";
     window.FAMILYDRIVE_BASE_PATH = pathPrefix;
     window.FAMILYDRIVE_API_URL = window.location.hostname.endsWith("github.io")
-        ? "https://familydrive.onrender.com"
+        ? "fuzax.github.io"
         : "";
 
     window.familyDriveUrl = (path) => `${window.FAMILYDRIVE_API_URL}${path}`;

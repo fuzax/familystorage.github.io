@@ -1,3 +1,6 @@
+window.FAMILYDRIVE_BASE_PATH = window.FAMILYDRIVE_BASE_PATH || "";
+window.familyDriveUrl = window.familyDriveUrl || ((path) => path);
+
 const form = document.getElementById("authForm");
 const tabs = document.querySelectorAll(".auth-tab");
 const nameField = document.getElementById("nameField");
