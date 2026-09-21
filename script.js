@@ -15,8 +15,10 @@ async function loadAccount() {
         document.getElementById("accountName").textContent = data.user.name;
         document.getElementById("accountEmail").textContent = data.user.email;
         document.querySelector(".avatar").textContent = data.user.name.charAt(0).toUpperCase();
+        return data.user;
     } catch (error) {
         window.location.assign("/");
+        return null;
     }
 }
 
@@ -25,7 +27,76 @@ document.getElementById("logoutButton")?.addEventListener("click", async () => {
     window.location.assign("/");
 });
 
-loadAccount();
+async function ensureBox(forceChooser = false) {
+    const data = await requestJson("/api/boxes");
+    if (data.activeBoxId && !forceChooser) {
+        const activeBox = data.boxes.find((box) => box.id === data.activeBoxId) || null;
+        if (activeBox) state.box = activeBox;
+        return activeBox;
+    }
+
+    return new Promise((resolve) => {
+        appView.innerHTML = `
+            <section class="box-chooser">
+                <div class="box-chooser-intro">
+                    <p class="eyebrow">VOTRE ESPACE PARTAGE</p>
+                    <h1>Choisissez votre box</h1>
+                    <p>Chaque box possède son espace séparé et 30 Go gratuits. Partagez son code avec les personnes de votre choix.</p>
+                </div>
+                <div class="box-actions">
+                    ${data.boxes.length ? `<div class="box-form box-existing"><h2>Mes box existantes</h2><p>Ouvrez une box que vous avez déjà rejointe.</p><div class="box-existing-list">${data.boxes.map((box) => `<button type="button" class="existing-box-button" data-box-id="${box.id}"><strong>${box.name}</strong><span>Code : ${box.code}</span></button>`).join("")}</div></div>` : ""}
+                    <form id="createBoxForm" class="box-form">
+                        <h2>Créer une box</h2>
+                        <p>Créez un nouvel espace familial privé.</p>
+                        <input name="name" placeholder="Nom de la box" maxlength="60" required>
+                        <button class="auth-submit" type="submit">Créer ma box de 30 Go</button>
+                    </form>
+                    <form id="joinBoxForm" class="box-form">
+                        <h2>Se connecter à une box</h2>
+                        <p>Utilisez le code reçu par un proche.</p>
+                        <input name="code" placeholder="Code de la box" minlength="8" maxlength="16" required>
+                        <button class="auth-submit" type="submit">Rejoindre la box</button>
+                    </form>
+                </div>
+                <p id="boxMessage" class="auth-message" role="alert"></p>
+            </section>
+        `;
+
+        const showBox = (box) => {
+            state.box = box;
+            resolve(box);
+        };
+        const message = document.getElementById("boxMessage");
+        document.querySelectorAll(".existing-box-button").forEach((button) => {
+            button.addEventListener("click", async () => {
+                try {
+                    const result = await requestJson("/api/boxes/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ boxId: button.dataset.boxId }) });
+                    showBox(result.box);
+                } catch (error) {
+                    message.textContent = error.message;
+                }
+            });
+        });
+        document.getElementById("createBoxForm").addEventListener("submit", async (event) => {
+            event.preventDefault();
+            try {
+                const result = await requestJson("/api/boxes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: new FormData(event.currentTarget).get("name") }) });
+                showBox(result.box);
+            } catch (error) {
+                message.textContent = error.message;
+            }
+        });
+        document.getElementById("joinBoxForm").addEventListener("submit", async (event) => {
+            event.preventDefault();
+            try {
+                const result = await requestJson("/api/boxes/join", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: new FormData(event.currentTarget).get("code") }) });
+                showBox(result.box);
+            } catch (error) {
+                message.textContent = error.message;
+            }
+        });
+    });
+}
 
 const STORAGE_KEY = "familydrive-photos";
 const defaultPhotos = [
@@ -38,8 +109,34 @@ const defaultPhotos = [
 const state = {
     view: "home",
     currentPath: "",
-    viewMode: "list"
+    viewMode: "list",
+    box: null
 };
+
+async function refreshBoxPanel() {
+    const boxList = document.getElementById("boxList");
+    if (!boxList) return;
+    try {
+        const data = await requestJson("/api/boxes");
+        boxList.innerHTML = data.boxes.map((box) => `
+            <button type="button" class="box-list-item ${box.id === state.box?.id ? "active" : ""}" data-box-id="${box.id}">
+                <strong>${box.name}</strong>
+                <span>${box.code} · ${box.usedGb} / ${box.quotaGb} Go</span>
+            </button>
+        `).join("") || `<span class="box-list-empty">Aucune box</span>`;
+        boxList.querySelectorAll(".box-list-item").forEach((button) => {
+            button.addEventListener("click", async () => {
+                const result = await requestJson("/api/boxes/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ boxId: button.dataset.boxId }) });
+                state.box = result.box;
+                state.currentPath = "";
+                refreshBoxPanel();
+                renderHomeView();
+            });
+        });
+    } catch (error) {
+        boxList.innerHTML = "<span class=\"box-list-empty\">Box indisponible</span>";
+    }
+}
 
 let photos = loadPhotos();
 
@@ -135,6 +232,7 @@ function renderHomeView() {
                 <p class="eyebrow">VOTRE ESPACE FAMILIAL</p>
                 <h1>Bienvenue sur <span>FamilyDrive</span></h1>
                 <p class="subtitle">Retrouvez tous vos souvenirs au même endroit.</p>
+                <p class="box-identity">Box : <strong>${state.box?.name || ""}</strong> <span>Code de partage : <b>${state.box?.code || ""}</b></span></p>
             </div>
             <button id="uploadButton" class="upload-button">＋ Ajouter des photos</button>
             <input id="fileInput" type="file" accept="image/*" multiple hidden>
@@ -238,6 +336,7 @@ async function refreshStorageStats() {
     const storageLabel = document.getElementById("storageUsedLabel");
     const storageBar = document.getElementById("storageBar");
     const storageText = document.getElementById("storageText");
+    const storageWarning = document.getElementById("storageWarning");
 
     if (!storageLabel || !storageBar || !storageText) return;
 
@@ -247,12 +346,33 @@ async function refreshStorageStats() {
         storageLabel.textContent = `${percent.toFixed(0)}%`;
         storageBar.style.width = `${percent}%`;
         storageText.textContent = `${Number(stats.usedGb).toFixed(1)} Go utilisés sur ${Number(stats.totalGb).toFixed(0)} Go`;
+        storageBar.parentElement.classList.toggle("storage-near-full", percent >= 80 && percent < 95);
+        storageBar.parentElement.classList.toggle("storage-critical", percent >= 95);
+        if (storageWarning) {
+            storageWarning.className = "storage-warning";
+            if (percent >= 100) {
+                storageWarning.textContent = "Stockage saturé : libérez de l’espace pour ajouter des fichiers.";
+                storageWarning.classList.add("critical");
+            } else if (percent >= 95) {
+                storageWarning.textContent = "Attention : il reste très peu d’espace dans cette box.";
+                storageWarning.classList.add("critical");
+            } else if (percent >= 80) {
+                storageWarning.textContent = "Prévention : votre box approche de la saturation.";
+                storageWarning.classList.add("warning");
+            }
+        }
     } catch (error) {
         storageLabel.textContent = "0%";
         storageBar.style.width = "0%";
         storageText.textContent = "Stockage local disponible";
+        storageBar.parentElement.classList.remove("storage-near-full", "storage-critical");
+        if (storageWarning) storageWarning.textContent = "";
     }
 }
+
+window.setInterval(() => {
+    if (state.box) refreshStorageStats();
+}, 10000);
 
 async function refreshFolderTree() {
     const treeContainer = document.getElementById("folderTree");
@@ -707,4 +827,36 @@ document.querySelectorAll(".nav-link").forEach((button) => {
     });
 });
 
-renderHomeView();
+async function initApp() {
+    const user = await loadAccount();
+    if (!user) return;
+    const box = await ensureBox();
+    if (!box) return;
+    refreshBoxPanel();
+    renderHomeView();
+}
+
+document.getElementById("boxHelpButton")?.addEventListener("click", () => {
+    document.getElementById("boxHelpModal")?.classList.remove("hidden");
+});
+
+document.getElementById("closeBoxHelpButton")?.addEventListener("click", () => {
+    document.getElementById("boxHelpModal")?.classList.add("hidden");
+});
+
+document.getElementById("boxHelpModal")?.addEventListener("click", (event) => {
+    if (event.target.id === "boxHelpModal") event.currentTarget.classList.add("hidden");
+});
+
+document.getElementById("addBoxButton")?.addEventListener("click", () => {
+    appView.innerHTML = "";
+    ensureBox(true).then((box) => {
+        if (box) {
+            state.box = box;
+            refreshBoxPanel();
+            renderHomeView();
+        }
+    });
+});
+
+initApp();

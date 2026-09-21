@@ -180,6 +180,76 @@ body {
     display: none;
 }
 
+.box-chooser {
+    max-width: 980px;
+    margin: 35px auto;
+}
+
+.box-chooser-intro {
+    max-width: 620px;
+    margin-bottom: 28px;
+}
+
+.box-chooser-intro h1 {
+    margin: 8px 0;
+    font-size: clamp(32px, 5vw, 56px);
+    line-height: 1.05;
+}
+
+.box-chooser-intro > p:last-child,
+.box-form p {
+    color: var(--muted);
+    line-height: 1.6;
+}
+
+.box-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 20px;
+}
+
+.box-form {
+    padding: 25px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: var(--card);
+    box-shadow: var(--shadow);
+}
+
+.box-form h2 {
+    margin: 0;
+}
+
+.box-form input {
+    width: 100%;
+    margin: 8px 0 14px;
+    padding: 12px 13px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card-strong);
+    color: var(--text);
+}
+
+.box-identity {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    margin: 18px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.box-identity b {
+    color: var(--primary);
+    letter-spacing: 1px;
+}
+
+@media (max-width: 760px) {
+    .box-actions {
+        grid-template-columns: 1fr;
+    }
+}
+
 @media (max-width: 760px) {
     .auth-page {
         padding: 18px;
@@ -249,6 +319,135 @@ body.dark .sidebar {
 nav {
     display: grid;
     gap: 8px;
+}
+
+.box-panel {
+    margin: 24px 0 16px;
+    padding: 13px 10px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.28);
+}
+
+body.dark .box-panel {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.box-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 9px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+.box-help-button {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--card-strong);
+    color: var(--primary);
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.box-list {
+    display: grid;
+    gap: 5px;
+}
+
+.box-list-item {
+    display: grid;
+    gap: 3px;
+    width: 100%;
+    padding: 9px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+}
+
+.box-list-item:hover,
+.box-list-item.active {
+    border-color: var(--border);
+    background: var(--primary-light);
+}
+
+.box-list-item strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+}
+
+.box-list-item span,
+.box-list-empty {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.box-add-button {
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--primary);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.box-help-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: rgba(13, 17, 25, .45);
+}
+
+.box-help-modal.hidden {
+    display: none;
+}
+
+.box-help-card {
+    position: relative;
+    width: min(100%, 520px);
+    padding: 30px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: var(--card-strong);
+    box-shadow: var(--shadow);
+}
+
+.box-help-card h2 {
+    margin: 5px 0 12px;
+}
+
+.box-help-card p,
+.box-help-card li {
+    color: var(--muted);
+    line-height: 1.65;
+}
+
+.box-help-card ol {
+    padding-left: 20px;
+}
+
+.box-help-note {
+    margin-bottom: 0;
+    font-size: 12px;
 }
 
 .nav-link {
@@ -379,10 +578,33 @@ body.dark .storage {
     transition: width 0.25s ease;
 }
 
+.progress.storage-near-full div {
+    background: linear-gradient(90deg, #e5a832, #e87835);
+}
+
+.progress.storage-critical div {
+    background: var(--danger);
+}
+
 .storage p {
     margin: 0;
     color: var(--muted);
     font-size: 11px;
+}
+
+.storage-warning {
+    min-height: 0;
+    margin-top: 7px !important;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.storage-warning.warning {
+    color: #b77808;
+}
+
+.storage-warning.critical {
+    color: var(--danger);
 }
 
 .sidebar-bottom {

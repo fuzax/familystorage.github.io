@@ -3,4 +3,6 @@ users.json
 storage/*
 trash/*
 tmp-uploads/*
+boxes.json
+boxes/*
 .env

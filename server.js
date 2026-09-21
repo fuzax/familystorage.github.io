@@ -5,20 +5,63 @@ const path = require("path");
 const crypto = require("crypto");
 
 const app = express();
+app.disable("x-powered-by");
 const DEFAULT_PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const STORAGE_ROOT = process.env.STORAGE_ROOT || path.join(__dirname, "storage");
 const TRASH_ROOT = process.env.TRASH_ROOT || path.join(__dirname, "trash");
 const TMP_UPLOAD_DIR = process.env.TMP_UPLOAD_DIR || path.join(__dirname, "tmp-uploads");
 const AUTH_DB_PATH = process.env.AUTH_DB_PATH || path.join(__dirname, "users.json");
+const BOXES_DB_PATH = process.env.BOXES_DB_PATH || path.join(__dirname, "boxes.json");
+const BOXES_ROOT = process.env.BOXES_ROOT || path.join(__dirname, "boxes");
+const BOX_QUOTA_BYTES = 30 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_FILE_BYTES = Number(process.env.MAX_UPLOAD_FILE_BYTES) || 5 * 1024 * 1024 * 1024;
+const MAX_REQUESTS_PER_WINDOW = 120;
+const RATE_WINDOW_MS = 15 * 60 * 1000;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const sessions = new Map();
+const rateLimits = new Map();
 
 fs.mkdirSync(STORAGE_ROOT, { recursive: true });
 fs.mkdirSync(TRASH_ROOT, { recursive: true });
 fs.mkdirSync(TMP_UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(BOXES_ROOT, { recursive: true });
 
-const upload = multer({ dest: TMP_UPLOAD_DIR });
+const upload = multer({
+    dest: TMP_UPLOAD_DIR,
+    limits: { files: 200, fileSize: MAX_UPLOAD_FILE_BYTES }
+});
+
+function getClientAddress(req) {
+    return String(req.ip || req.socket.remoteAddress || "unknown");
+}
+
+function rateLimit(req, res, next) {
+    const now = Date.now();
+    const key = `${getClientAddress(req)}:${req.path}`;
+    const current = rateLimits.get(key);
+    if (!current || current.resetAt <= now) {
+        rateLimits.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
+        return next();
+    }
+    if (current.count >= MAX_REQUESTS_PER_WINDOW) {
+        res.setHeader("Retry-After", Math.ceil((current.resetAt - now) / 1000));
+        return res.status(429).json({ message: "Trop de tentatives. Réessayez plus tard." });
+    }
+    current.count += 1;
+    next();
+}
+
+function securityHeaders(req, res, next) {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    if (req.secure || req.headers["x-forwarded-proto"] === "https") {
+        res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
+    next();
+}
 
 function readUsers() {
     if (!fs.existsSync(AUTH_DB_PATH)) return [];
@@ -35,6 +78,52 @@ function writeUsers(users) {
     fs.writeFileSync(AUTH_DB_PATH, JSON.stringify(users, null, 2));
 }
 
+function readBoxes() {
+    if (!fs.existsSync(BOXES_DB_PATH)) return [];
+    try {
+        const boxes = JSON.parse(fs.readFileSync(BOXES_DB_PATH, "utf8"));
+        return Array.isArray(boxes) ? boxes : [];
+    } catch (error) {
+        return [];
+    }
+}
+
+function writeBoxes(boxes) {
+    fs.mkdirSync(path.dirname(BOXES_DB_PATH), { recursive: true });
+    fs.writeFileSync(BOXES_DB_PATH, JSON.stringify(boxes, null, 2));
+}
+
+function getBoxRoots(box) {
+    const root = path.join(BOXES_ROOT, box.id);
+    return { storage: path.join(root, "storage"), trash: path.join(root, "trash") };
+}
+
+function ensureBoxRoots(box) {
+    const roots = getBoxRoots(box);
+    fs.mkdirSync(roots.storage, { recursive: true });
+    fs.mkdirSync(roots.trash, { recursive: true });
+    return roots;
+}
+
+function getActiveBox(req) {
+    const cookies = String(req.headers.cookie || "").split(";");
+    const boxCookie = cookies.find((cookie) => cookie.trim().startsWith("familydrive_box="));
+    const boxId = boxCookie ? decodeURIComponent(boxCookie.split("=").slice(1).join("=").trim()) : "";
+    const user = getCurrentUser(req);
+    if (!user || !boxId) return null;
+    return readBoxes().find((box) => box.id === boxId && box.members.includes(user.id)) || null;
+}
+
+function setActiveBox(res, boxId) {
+    const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+    res.setHeader("Set-Cookie", `familydrive_box=${encodeURIComponent(boxId)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}${secure}`);
+}
+
+function publicBox(box, userId) {
+    const stats = getStorageStats(ensureBoxRoots(box).storage);
+    return { id: box.id, name: box.name, code: box.code, quotaGb: 30, usedGb: stats.usedGb, usedPercent: stats.usedPercent, owner: box.ownerId === userId, memberCount: box.members.length };
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
     const hash = crypto.scryptSync(password, salt, 64).toString("hex");
     return `${salt}:${hash}`;
@@ -44,7 +133,9 @@ function verifyPassword(password, storedHash) {
     const [salt, expected] = String(storedHash || "").split(":");
     if (!salt || !expected) return false;
     const actual = crypto.scryptSync(password, salt, 64).toString("hex");
-    return crypto.timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
+    const actualBuffer = Buffer.from(actual, "hex");
+    const expectedBuffer = Buffer.from(expected, "hex");
+    return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
 function getSessionToken(req) {
@@ -66,7 +157,8 @@ function getCurrentUser(req) {
 function createSession(res, user) {
     const token = crypto.randomBytes(32).toString("hex");
     sessions.set(token, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
-    res.setHeader("Set-Cookie", `familydrive_session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}`);
+    const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+    res.setHeader("Set-Cookie", `familydrive_session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}${secure}`);
 }
 
 function publicUser(user) {
@@ -81,6 +173,14 @@ function normalizeRelativePath(rawPath = "") {
         .replace(/\/+$/, "");
 }
 
+function validateItemName(rawName, label = "Nom") {
+    const name = String(rawName || "").trim();
+    if (!name || name === "." || name === ".." || name.length > 255 || /[\\/\u0000-\u001f\u007f]/.test(name)) {
+        throw new Error(`${label} invalide`);
+    }
+    return name;
+}
+
 function safeTargetPath(relativePath = "", root = STORAGE_ROOT) {
     const normalized = normalizeRelativePath(relativePath);
     const target = normalized ? path.resolve(root, normalized) : root;
@@ -93,7 +193,7 @@ function safeTargetPath(relativePath = "", root = STORAGE_ROOT) {
     throw new Error("Chemin invalide");
 }
 
-function getDirectoryEntries(relativePath = "", root = STORAGE_ROOT) {
+function getDirectoryEntries(relativePath = "", root = STORAGE_ROOT, isTrashRoot = false) {
     const directory = safeTargetPath(relativePath, root);
 
     if (!fs.existsSync(directory)) {
@@ -106,7 +206,7 @@ function getDirectoryEntries(relativePath = "", root = STORAGE_ROOT) {
             const absolutePath = path.join(directory, entry.name);
             const relative = path.relative(root, absolutePath).split(path.sep).join("/");
             const stat = fs.statSync(absolutePath);
-            const prefixedPath = root === TRASH_ROOT && relative ? `trash/${relative}` : relative;
+            const prefixedPath = isTrashRoot && relative ? `trash/${relative}` : relative;
 
             return {
                 name: entry.name,
@@ -131,7 +231,7 @@ function buildParentPath(currentPath = "") {
     return parts.join("/");
 }
 
-function getStorageStats() {
+function getStorageStats(storageRoot = STORAGE_ROOT) {
     const totals = {
         files: 0,
         folders: 0,
@@ -155,7 +255,7 @@ function getStorageStats() {
         }
     }
 
-    walk(STORAGE_ROOT);
+    walk(storageRoot);
 
     return {
         ...totals,
@@ -165,8 +265,8 @@ function getStorageStats() {
     };
 }
 
-function buildFolderTree(dirPath = "") {
-    const absoluteDir = safeTargetPath(dirPath, STORAGE_ROOT);
+function buildFolderTree(dirPath = "", storageRoot = STORAGE_ROOT) {
+    const absoluteDir = safeTargetPath(dirPath, storageRoot);
     if (!fs.existsSync(absoluteDir) || !fs.statSync(absoluteDir).isDirectory()) {
         return { name: "Accueil", path: "", children: [] };
     }
@@ -176,7 +276,7 @@ function buildFolderTree(dirPath = "") {
         .filter((entry) => entry.isDirectory())
         .map((entry) => {
             const childPath = dirPath ? `${dirPath}/${entry.name}` : entry.name;
-            return buildFolderTree(childPath);
+            return buildFolderTree(childPath, storageRoot);
         })
         .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -200,36 +300,36 @@ function uniqueName(targetPath) {
     return candidate;
 }
 
-function moveToTrash(relativePath) {
+function moveToTrash(relativePath, storageRoot = STORAGE_ROOT, trashRoot = TRASH_ROOT) {
     const normalizedPath = normalizeRelativePath(relativePath).replace(/^trash\//, "");
-    const source = safeTargetPath(normalizedPath, STORAGE_ROOT);
+    const source = safeTargetPath(normalizedPath, storageRoot);
     if (!fs.existsSync(source)) {
         throw new Error("Élément introuvable");
     }
 
     const originalName = path.basename(normalizedPath) || "element";
-    const trashTarget = uniqueName(path.join(TRASH_ROOT, originalName));
+    const trashTarget = uniqueName(path.join(trashRoot, originalName));
 
     fs.renameSync(source, trashTarget);
     return trashTarget;
 }
 
-function restoreFromTrash(relativePath) {
+function restoreFromTrash(relativePath, storageRoot = STORAGE_ROOT, trashRoot = TRASH_ROOT) {
     const normalizedPath = normalizeRelativePath(relativePath).replace(/^trash\//, "");
-    const source = safeTargetPath(normalizedPath, TRASH_ROOT);
+    const source = safeTargetPath(normalizedPath, trashRoot);
     if (!fs.existsSync(source)) {
         throw new Error("Élément introuvable dans la corbeille");
     }
 
     const originalName = path.basename(normalizedPath) || "element";
-    const target = uniqueName(path.join(STORAGE_ROOT, originalName));
+    const target = uniqueName(path.join(storageRoot, originalName));
     fs.renameSync(source, target);
     return target;
 }
 
-function moveItem(currentPath, destinationPath) {
-    const source = safeTargetPath(currentPath, STORAGE_ROOT);
-    const destRoot = destinationPath ? safeTargetPath(destinationPath, STORAGE_ROOT) : STORAGE_ROOT;
+function moveItem(currentPath, destinationPath, storageRoot = STORAGE_ROOT) {
+    const source = safeTargetPath(currentPath, storageRoot);
+    const destRoot = destinationPath ? safeTargetPath(destinationPath, storageRoot) : storageRoot;
 
     if (!fs.existsSync(source)) {
         throw new Error("Élément introuvable");
@@ -246,13 +346,10 @@ function moveItem(currentPath, destinationPath) {
     return finalTarget;
 }
 
-function renameItem(currentPath, newName) {
-    const cleanName = String(newName || "").trim();
-    if (!cleanName) {
-        throw new Error("Le nouveau nom est obligatoire");
-    }
+function renameItem(currentPath, newName, storageRoot = STORAGE_ROOT) {
+    const cleanName = validateItemName(newName, "Le nouveau nom");
 
-    const source = safeTargetPath(currentPath, STORAGE_ROOT);
+    const source = safeTargetPath(currentPath, storageRoot);
     const directory = path.dirname(source);
     const target = uniqueName(path.join(directory, cleanName));
 
@@ -260,15 +357,22 @@ function renameItem(currentPath, newName) {
     return target;
 }
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(securityHeaders);
+app.use(express.json({ limit: "32kb" }));
+app.use(express.urlencoded({ extended: true, limit: "32kb" }));
+app.use((req, res, next) => {
+    if (req.path.startsWith("/api/")) return next();
+    const publicFiles = new Set(["/", "/index.html", "/auth.html", "/auth.js", "/script.js", "/style.css"]);
+    if (publicFiles.has(req.path)) return next();
+    return res.status(404).send("Not found");
+});
 app.use(express.static(__dirname, { index: false }));
 
 app.get("/api/auth/me", (req, res) => {
     res.json({ user: publicUser(getCurrentUser(req)) });
 });
 
-app.post("/api/auth/register", (req, res) => {
+app.post("/api/auth/register", rateLimit, (req, res) => {
     const name = String(req.body?.name || "").trim();
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
@@ -296,7 +400,7 @@ app.post("/api/auth/register", (req, res) => {
     res.status(201).json({ user: publicUser(user) });
 });
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", rateLimit, (req, res) => {
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
     const user = readUsers().find((candidate) => candidate.email === email);
@@ -312,27 +416,87 @@ app.post("/api/auth/login", (req, res) => {
 app.post("/api/auth/logout", (req, res) => {
     const token = getSessionToken(req);
     sessions.delete(token);
-    res.setHeader("Set-Cookie", "familydrive_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0");
+    res.setHeader("Set-Cookie", [
+        "familydrive_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0",
+        "familydrive_box=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0"
+    ]);
     res.json({ ok: true });
+});
+
+app.get("/api/boxes", (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Connexion requise." });
+    const boxes = readBoxes().filter((box) => box.members.includes(user.id));
+    res.json({ boxes: boxes.map((box) => publicBox(box, user.id)), activeBoxId: getActiveBox(req)?.id || null });
+});
+
+app.post("/api/boxes", (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Connexion requise." });
+    const name = String(req.body?.name || "").trim();
+    if (name.length < 2 || name.length > 60) {
+        return res.status(400).json({ message: "Le nom de la box doit contenir entre 2 et 60 caractères." });
+    }
+
+    const boxes = readBoxes();
+    let code = "";
+    do {
+        code = crypto.randomBytes(8).toString("hex").toUpperCase();
+    } while (boxes.some((box) => box.code === code));
+
+    const box = { id: crypto.randomUUID(), name, code, ownerId: user.id, members: [user.id], createdAt: new Date().toISOString() };
+    boxes.push(box);
+    writeBoxes(boxes);
+    ensureBoxRoots(box);
+    setActiveBox(res, box.id);
+    res.status(201).json({ box: publicBox(box, user.id) });
+});
+
+app.post("/api/boxes/join", rateLimit, (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Connexion requise." });
+    const code = String(req.body?.code || "").trim().toUpperCase();
+    if (!/^[A-F0-9]{8}(?:[A-F0-9]{8})?$/.test(code)) return res.status(400).json({ message: "Code de box invalide." });
+    const boxes = readBoxes();
+    const box = boxes.find((candidate) => candidate.code === code);
+    if (!box) return res.status(404).json({ message: "Aucune box ne correspond à ce code." });
+    if (!box.members.includes(user.id)) box.members.push(user.id);
+    writeBoxes(boxes);
+    ensureBoxRoots(box);
+    setActiveBox(res, box.id);
+    res.json({ box: publicBox(box, user.id) });
+});
+
+app.post("/api/boxes/select", (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Connexion requise." });
+    const box = readBoxes().find((candidate) => candidate.id === req.body?.boxId && candidate.members.includes(user.id));
+    if (!box) return res.status(404).json({ message: "Box introuvable." });
+    setActiveBox(res, box.id);
+    res.json({ box: publicBox(box, user.id) });
 });
 
 app.use("/api", (req, res, next) => {
     if (req.path.startsWith("/auth/") || req.path === "/health") return next();
     if (!getCurrentUser(req)) return res.status(401).json({ message: "Connexion requise." });
+    if (!req.path.startsWith("/boxes") && !getActiveBox(req)) {
+        return res.status(409).json({ message: "Sélectionnez ou créez une box pour continuer." });
+    }
     next();
 });
 
 app.get("/api/files", (req, res) => {
     try {
+        const roots = ensureBoxRoots(getActiveBox(req));
         const currentPath = normalizeRelativePath(decodeURIComponent(req.query.path || ""));
-        const root = currentPath === "trash" ? TRASH_ROOT : STORAGE_ROOT;
-        const directory = safeTargetPath(currentPath, root);
+        const root = currentPath === "trash" ? roots.trash : roots.storage;
+        const directory = safeTargetPath(currentPath === "trash" ? "" : currentPath, root);
 
         if (!fs.existsSync(directory)) {
             return res.status(404).json({ message: "Dossier introuvable" });
         }
 
-        const entries = getDirectoryEntries(currentPath, root);
+        const entries = getDirectoryEntries(currentPath, root, currentPath === "trash");
         const parentPath = currentPath === "trash" ? "" : buildParentPath(currentPath);
 
         res.json({
@@ -348,21 +512,18 @@ app.get("/api/files", (req, res) => {
 
 app.post("/api/folders", (req, res) => {
     try {
-        const folderName = String(req.body?.name || "").trim();
+    const storageRoot = ensureBoxRoots(getActiveBox(req)).storage;
+        const folderName = validateItemName(req.body?.name, "Le nom du dossier");
         const currentPath = normalizeRelativePath(req.body?.path || "");
 
-        if (!folderName) {
-            return res.status(400).json({ message: "Le nom du dossier est obligatoire" });
-        }
-
-        const directory = safeTargetPath(currentPath, STORAGE_ROOT);
+        const directory = safeTargetPath(currentPath, storageRoot);
         const targetFolder = uniqueName(path.join(directory, folderName));
         fs.mkdirSync(targetFolder, { recursive: true });
 
         res.status(201).json({
             message: "Dossier créé",
             name: folderName,
-            path: path.relative(STORAGE_ROOT, targetFolder).split(path.sep).join("/")
+            path: path.relative(storageRoot, targetFolder).split(path.sep).join("/")
         });
     } catch (error) {
         res.status(400).json({ message: error.message || "Impossible de créer le dossier" });
@@ -371,32 +532,44 @@ app.post("/api/folders", (req, res) => {
 
 app.post("/api/upload", upload.array("files", 200), (req, res) => {
     try {
+        const storageRoot = ensureBoxRoots(getActiveBox(req)).storage;
         const currentPath = normalizeRelativePath(req.body?.path || "");
-        const directory = safeTargetPath(currentPath, STORAGE_ROOT);
+        const directory = safeTargetPath(currentPath, storageRoot);
 
         if (!fs.existsSync(directory)) {
             return res.status(404).json({ message: "Dossier introuvable" });
         }
 
         const uploaded = [];
+        const currentStats = getStorageStats(storageRoot);
+        const incomingBytes = (req.files || []).reduce((total, file) => total + file.size, 0);
+        if (currentStats.usedBytes + incomingBytes > BOX_QUOTA_BYTES) {
+            for (const file of req.files || []) fs.unlinkSync(file.path);
+            return res.status(413).json({ message: "Cette box a atteint sa limite gratuite de 30 Go." });
+        }
 
         for (const file of req.files || []) {
-            const target = uniqueName(path.join(directory, file.originalname));
+            const fileName = validateItemName(path.basename(file.originalname), "Le nom du fichier");
+            const target = uniqueName(path.join(directory, fileName));
             fs.copyFileSync(file.path, target);
             fs.unlinkSync(file.path);
-            uploaded.push(file.originalname);
+            uploaded.push(fileName);
         }
 
         res.json({ ok: true, uploaded });
     } catch (error) {
+        for (const file of req.files || []) {
+            if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        }
         res.status(400).json({ message: error.message || "Impossible de téléverser" });
     }
 });
 
 app.get("/api/download", (req, res) => {
     try {
+        const storageRoot = ensureBoxRoots(getActiveBox(req)).storage;
         const relativePath = normalizeRelativePath(decodeURIComponent(req.query.path || ""));
-        const filePath = safeTargetPath(relativePath, STORAGE_ROOT);
+        const filePath = safeTargetPath(relativePath, storageRoot);
 
         if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
             return res.status(404).json({ message: "Fichier introuvable" });
@@ -410,6 +583,7 @@ app.get("/api/download", (req, res) => {
 
 app.post("/api/rename", (req, res) => {
     try {
+    const storageRoot = ensureBoxRoots(getActiveBox(req)).storage;
         const currentPath = normalizeRelativePath(req.body?.path || "");
         const newName = String(req.body?.newName || "").trim();
 
@@ -417,8 +591,8 @@ app.post("/api/rename", (req, res) => {
             return res.status(400).json({ message: "Aucun élément sélectionné" });
         }
 
-        const renamed = renameItem(currentPath, newName);
-        res.json({ ok: true, path: path.relative(STORAGE_ROOT, renamed).split(path.sep).join("/") });
+        const renamed = renameItem(currentPath, newName, storageRoot);
+        res.json({ ok: true, path: path.relative(storageRoot, renamed).split(path.sep).join("/") });
     } catch (error) {
         res.status(400).json({ message: error.message || "Renommage impossible" });
     }
@@ -426,6 +600,7 @@ app.post("/api/rename", (req, res) => {
 
 app.post("/api/move", (req, res) => {
     try {
+    const storageRoot = ensureBoxRoots(getActiveBox(req)).storage;
         const currentPath = normalizeRelativePath(req.body?.path || "");
         const destinationPath = normalizeRelativePath(req.body?.destinationPath || "");
 
@@ -433,8 +608,8 @@ app.post("/api/move", (req, res) => {
             return res.status(400).json({ message: "Aucun élément sélectionné" });
         }
 
-        const moved = moveItem(currentPath, destinationPath);
-        res.json({ ok: true, path: path.relative(STORAGE_ROOT, moved).split(path.sep).join("/") });
+        const moved = moveItem(currentPath, destinationPath, storageRoot);
+        res.json({ ok: true, path: path.relative(storageRoot, moved).split(path.sep).join("/") });
     } catch (error) {
         res.status(400).json({ message: error.message || "Déplacement impossible" });
     }
@@ -442,11 +617,12 @@ app.post("/api/move", (req, res) => {
 
 app.delete("/api/files", (req, res) => {
     try {
+    const roots = ensureBoxRoots(getActiveBox(req));
         const relativePath = normalizeRelativePath(decodeURIComponent(req.query.path || ""));
         const isTrashPath = relativePath === "trash" || relativePath.startsWith("trash/");
         const target = isTrashPath
-            ? safeTargetPath(relativePath.replace(/^trash\//, ""), TRASH_ROOT)
-            : safeTargetPath(relativePath, STORAGE_ROOT);
+            ? safeTargetPath(relativePath.replace(/^trash\//, ""), roots.trash)
+            : safeTargetPath(relativePath, roots.storage);
 
         if (relativePath === "" || relativePath === "trash") {
             return res.status(400).json({ message: "Le dossier racine ne peut pas être supprimé" });
@@ -461,7 +637,7 @@ app.delete("/api/files", (req, res) => {
             return res.json({ ok: true, deleted: relativePath });
         }
 
-        moveToTrash(relativePath);
+        moveToTrash(relativePath, roots.storage, roots.trash);
         res.json({ ok: true, deleted: relativePath });
     } catch (error) {
         res.status(400).json({ message: error.message || "Suppression impossible" });
@@ -470,6 +646,7 @@ app.delete("/api/files", (req, res) => {
 
 app.post("/api/restore", (req, res) => {
     try {
+    const roots = ensureBoxRoots(getActiveBox(req));
         const relativePath = normalizeRelativePath(req.body?.path || "");
         const storagePath = relativePath.startsWith("trash/") ? relativePath.replace(/^trash\//, "") : relativePath;
 
@@ -477,8 +654,8 @@ app.post("/api/restore", (req, res) => {
             return res.status(400).json({ message: "Aucun élément à restaurer" });
         }
 
-        const restored = restoreFromTrash(storagePath);
-        res.json({ ok: true, path: path.relative(STORAGE_ROOT, restored).split(path.sep).join("/") });
+        const restored = restoreFromTrash(storagePath, roots.storage, roots.trash);
+        res.json({ ok: true, path: path.relative(roots.storage, restored).split(path.sep).join("/") });
     } catch (error) {
         res.status(400).json({ message: error.message || "Restauration impossible" });
     }
@@ -486,9 +663,10 @@ app.post("/api/restore", (req, res) => {
 
 app.post("/api/trash/clear", (req, res) => {
     try {
-        if (fs.existsSync(TRASH_ROOT)) {
-            fs.rmSync(TRASH_ROOT, { recursive: true, force: true });
-            fs.mkdirSync(TRASH_ROOT, { recursive: true });
+        const trashRoot = ensureBoxRoots(getActiveBox(req)).trash;
+        if (fs.existsSync(trashRoot)) {
+            fs.rmSync(trashRoot, { recursive: true, force: true });
+            fs.mkdirSync(trashRoot, { recursive: true });
         }
         res.json({ ok: true });
     } catch (error) {
@@ -502,7 +680,7 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/tree", (req, res) => {
     try {
-        res.json(buildFolderTree());
+        res.json(buildFolderTree("", ensureBoxRoots(getActiveBox(req)).storage));
     } catch (error) {
         res.status(500).json({ message: "Impossible de créer l’arbre des dossiers" });
     }
@@ -510,11 +688,28 @@ app.get("/api/tree", (req, res) => {
 
 app.get("/api/stats", (req, res) => {
     try {
-        const stats = getStorageStats();
+        const stats = getStorageStats(ensureBoxRoots(getActiveBox(req)).storage);
+        stats.totalBytes = BOX_QUOTA_BYTES;
+        stats.totalGb = "30";
+        stats.usedPercent = Math.min(100, (stats.usedBytes / BOX_QUOTA_BYTES) * 100);
         res.json(stats);
     } catch (error) {
         res.status(500).json({ message: "Impossible de calculer les statistiques" });
     }
+});
+
+app.use((error, req, res, next) => {
+    for (const file of req.files || []) {
+        if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    }
+    if (res.headersSent) return next(error);
+    if (error instanceof multer.MulterError) {
+        const message = error.code === "LIMIT_FILE_SIZE"
+            ? "Le fichier dépasse la taille maximale autorisée."
+            : "Téléversement refusé par les limites de sécurité.";
+        return res.status(413).json({ message });
+    }
+    res.status(400).json({ message: "Requête invalide." });
 });
 
 app.get("*", (req, res, next) => {

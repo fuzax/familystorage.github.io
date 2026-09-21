@@ -36,6 +36,15 @@
             </button>
         </nav>
 
+        <section class="box-panel">
+            <div class="box-panel-header">
+                <span>Mes box</span>
+                <button id="boxHelpButton" class="box-help-button" type="button" aria-label="Comprendre les box">?</button>
+            </div>
+            <div id="boxList" class="box-list"></div>
+            <button id="addBoxButton" class="box-add-button" type="button">＋ Ajouter une box</button>
+        </section>
+
         <div class="tree-panel">
             <div class="tree-panel-header">Dossiers</div>
             <div id="folderTree" class="folder-tree"></div>
@@ -48,6 +57,7 @@
             </div>
             <div class="progress"><div id="storageBar"></div></div>
             <p id="storageText">0 Go utilisés sur 1 To</p>
+            <p id="storageWarning" class="storage-warning" role="status" aria-live="polite"></p>
         </div>
 
         <div class="sidebar-bottom">
@@ -57,6 +67,22 @@
             </button>
         </div>
     </aside>
+
+    <div id="boxHelpModal" class="box-help-modal hidden" role="dialog" aria-modal="true" aria-labelledby="boxHelpTitle">
+        <div class="box-help-card">
+            <button id="closeBoxHelpButton" class="preview-close" type="button" aria-label="Fermer">✕</button>
+            <p class="eyebrow">COMMENT ÇA MARCHE ?</p>
+            <h2 id="boxHelpTitle">Les box FamilyDrive</h2>
+            <p>Une box est un espace de fichiers séparé. Chaque box possède 30 Go gratuits, son propre contenu et un code de partage.</p>
+            <ol>
+                <li>Créez une box et donnez-lui un nom.</li>
+                <li>Copiez son code et envoyez-le aux personnes de confiance.</li>
+                <li>Les personnes saisissent ce code pour rejoindre la même box.</li>
+                <li>Chaque membre peut ensuite consulter et gérer les fichiers de cette box.</li>
+            </ol>
+            <p class="box-help-note">Le code permet de rejoindre la box. Gardez-le privé et partagez-le uniquement avec votre famille.</p>
+        </div>
+    </div>
 
     <main>
         <header class="header">
