@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FamilyDrive</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <aside class="sidebar">
+        <div class="logo">
+            <div class="logo-icon">F</div>
+            <span>FamilyDrive</span>
+        </div>
+
+        <nav>
+            <button class="nav-link active" data-view="home">
+                <span>⌂</span>
+                Accueil
+            </button>
+            <button class="nav-link" data-view="files">
+                <span>▧</span>
+                Fichiers
+            </button>
+            <button class="nav-link" data-view="albums">
+                <span>□</span>
+                Albums
+            </button>
+            <button class="nav-link" data-view="favorites">
+                <span>☆</span>
+                Favoris
+            </button>
+            <button class="nav-link" data-view="trash">
+                <span>♲</span>
+                Corbeille
+            </button>
+        </nav>
+
+        <div class="tree-panel">
+            <div class="tree-panel-header">Dossiers</div>
+            <div id="folderTree" class="folder-tree"></div>
+        </div>
+
+        <div class="storage">
+            <div class="storage-title">
+                <span>Stockage</span>
+                <strong id="storageUsedLabel">0%</strong>
+            </div>
+            <div class="progress"><div id="storageBar"></div></div>
+            <p id="storageText">0 Go utilisés sur 1 To</p>
+        </div>
+
+        <div class="sidebar-bottom">
+            <button id="themeButton" class="nav-link">
+                <span id="themeIcon">☾</span>
+                <span id="themeText">Mode sombre</span>
+            </button>
+        </div>
+    </aside>
+
+    <main>
+        <header class="header">
+            <div class="search">
+                <span>⌕</span>
+                <input id="searchInput" type="text" placeholder="Rechercher dans FamilyDrive..." aria-label="Rechercher" />
+            </div>
+            <div class="account">
+                <div class="avatar">S</div>
+                <div>
+                    <strong id="accountName">Compte</strong>
+                    <small id="accountEmail">Mon compte</small>
+                </div>
+                <button id="logoutButton" class="account-logout" type="button">Déconnexion</button>
+            </div>
+        </header>
+
+        <section class="content">
+            <div id="appView"></div>
+        </section>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+</html>

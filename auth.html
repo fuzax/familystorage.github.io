@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connexion - FamilyDrive</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="auth-page">
+    <main class="auth-shell">
+        <section class="auth-intro">
+            <div class="logo"><div class="logo-icon">F</div><span>FamilyDrive</span></div>
+            <p class="eyebrow">VOTRE ESPACE FAMILIAL</p>
+            <h1>Vos souvenirs, enfin réunis.</h1>
+            <p>Connectez-vous pour retrouver vos fichiers et les partager avec votre famille.</p>
+        </section>
+        <section class="auth-card">
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-mode="login">Connexion</button>
+                <button class="auth-tab" data-mode="register">Créer un compte</button>
+            </div>
+            <h2 id="authTitle">Bon retour</h2>
+            <p id="authSubtitle" class="auth-subtitle">Connectez-vous à votre espace FamilyDrive.</p>
+            <form id="authForm">
+                <label id="nameField" class="auth-field hidden">Nom complet<input name="name" autocomplete="name" /></label>
+                <label class="auth-field">E-mail<input name="email" type="email" autocomplete="email" required /></label>
+                <label class="auth-field">Mot de passe<input name="password" type="password" minlength="8" autocomplete="current-password" required /></label>
+                <button class="auth-submit" type="submit">Se connecter</button>
+            </form>
+            <p id="authMessage" class="auth-message" role="alert"></p>
+        </section>
+    </main>
+    <script src="auth.js"></script>
+</body>
+</html>

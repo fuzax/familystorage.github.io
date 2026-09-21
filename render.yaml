@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: familydrive
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: STORAGE_ROOT
+        value: /var/data/storage
+      - key: TRASH_ROOT
+        value: /var/data/trash
+      - key: TMP_UPLOAD_DIR
+        value: /var/data/tmp-uploads
+      - key: AUTH_DB_PATH
+        value: /var/data/users.json
+    disk:
+      name: familydrive-data
+      mountPath: /var/data
+      sizeGB: 10
