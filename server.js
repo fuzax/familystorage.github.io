@@ -66,6 +66,23 @@ function securityHeaders(req, res, next) {
     next();
 }
 
+function corsHeaders(req, res, next) {
+    const origin = String(req.headers.origin || "");
+    const allowedOrigins = new Set([
+        "https://fuzax.github.io",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ]);
+    if (origin && allowedOrigins.has(origin)) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+        res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
+    }
+    if (req.method === "OPTIONS") return res.sendStatus(204);
+    next();
+}
+
 function readUsers() {
     if (!fs.existsSync(AUTH_DB_PATH)) return [];
     try {
@@ -168,7 +185,8 @@ function getActiveBox(req) {
 
 function setActiveBox(res, boxId) {
     const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-    res.setHeader("Set-Cookie", `familydrive_box=${encodeURIComponent(boxId)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}${secure}`);
+    const sameSite = process.env.NODE_ENV === "production" ? "None" : "Lax";
+    res.setHeader("Set-Cookie", `familydrive_box=${encodeURIComponent(boxId)}; HttpOnly; Path=/; SameSite=${sameSite}; Max-Age=${SESSION_TTL_MS / 1000}${secure}`);
 }
 
 function publicBox(box, userId) {
@@ -210,7 +228,8 @@ function createSession(res, user) {
     const token = crypto.randomBytes(32).toString("hex");
     sessions.set(token, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
     const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-    res.setHeader("Set-Cookie", `familydrive_session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}${secure}`);
+    const sameSite = process.env.NODE_ENV === "production" ? "None" : "Lax";
+    res.setHeader("Set-Cookie", `familydrive_session=${token}; HttpOnly; Path=/; SameSite=${sameSite}; Max-Age=${SESSION_TTL_MS / 1000}${secure}`);
 }
 
 function publicUser(user) {
@@ -410,11 +429,12 @@ function renameItem(currentPath, newName, storageRoot = STORAGE_ROOT) {
 }
 
 app.use(securityHeaders);
+app.use(corsHeaders);
 app.use(express.json({ limit: "32kb" }));
 app.use(express.urlencoded({ extended: true, limit: "32kb" }));
 app.use((req, res, next) => {
     if (req.path.startsWith("/api/")) return next();
-    const publicFiles = new Set(["/", "/index.html", "/auth.html", "/auth.js", "/script.js", "/style.css"]);
+    const publicFiles = new Set(["/", "/index.html", "/auth.html", "/auth.js", "/script.js", "/style.css", "/config.js"]);
     if (publicFiles.has(req.path) || req.path.startsWith("/share/")) return next();
     return res.status(404).send("Not found");
 });
@@ -468,9 +488,11 @@ app.post("/api/auth/login", rateLimit, (req, res) => {
 app.post("/api/auth/logout", (req, res) => {
     const token = getSessionToken(req);
     sessions.delete(token);
+    const sameSite = process.env.NODE_ENV === "production" ? "None" : "Lax";
+    const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
     res.setHeader("Set-Cookie", [
-        "familydrive_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0",
-        "familydrive_box=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0"
+        `familydrive_session=; HttpOnly; Path=/; SameSite=${sameSite}; Max-Age=0${secure}`,
+        `familydrive_box=; HttpOnly; Path=/; SameSite=${sameSite}; Max-Age=0${secure}`
     ]);
     res.json({ ok: true });
 });

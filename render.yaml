@@ -16,6 +16,16 @@ services:
         value: /var/data/tmp-uploads
       - key: AUTH_DB_PATH
         value: /var/data/users.json
+      - key: BOXES_DB_PATH
+        value: /var/data/boxes.json
+      - key: BOXES_ROOT
+        value: /var/data/boxes
+      - key: ADMIN_EMAILS_PATH
+        value: /var/data/admin-emails.json
+      - key: ACTIVITY_LOG_PATH
+        value: /var/data/activity.json
+      - key: SHARES_DB_PATH
+        value: /var/data/shares.json
     disk:
       name: familydrive-data
       mountPath: /var/data

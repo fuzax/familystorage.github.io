@@ -24,10 +24,10 @@ form.addEventListener("submit", async (event) => {
     submit.disabled = true;
     const body = Object.fromEntries(new FormData(form));
     try {
-        const response = await fetch(`/api/auth/${mode}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const response = await fetch(window.familyDriveUrl(`/api/auth/${mode}`), { credentials: "include", method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || "Une erreur est survenue.");
-        window.location.assign(`/${window.location.search}`);
+        window.location.assign(`${window.FAMILYDRIVE_BASE_PATH || ""}/${window.location.search}`);
     } catch (error) {
         message.textContent = error.message;
         submit.disabled = false;

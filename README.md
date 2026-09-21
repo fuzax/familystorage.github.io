@@ -19,6 +19,14 @@ Le serveur écoute sur toutes les interfaces réseau (`0.0.0.0`). Dans GitHub Co
 
 Pour une adresse permanente, déploie le projet sur un hébergeur Node.js comme Render, Railway ou Fly.io. `localhost` et l’adresse IP du conteneur ne sont pas des adresses publiques permanentes.
 
+## GitHub Pages
+
+GitHub Pages héberge uniquement l’interface. Le workflow `.github/workflows/pages.yml` publie les fichiers frontend sans publier les données privées. L’API doit être déployée séparément sur Render avec `render.yaml`.
+
+Le frontend GitHub Pages utilise par défaut `https://familydrive.onrender.com` comme API dans `config.js`. Si l’URL Render est différente, modifie `window.FAMILYDRIVE_API_URL` dans ce fichier avant de publier.
+
+Pour obtenir exactement `https://fuzax.github.io`, le dépôt doit s’appeler `fuzax.github.io`. Avec le dépôt actuel `familystorage-`, l’adresse Pages sera `https://fuzax.github.io/familystorage-/`.
+
 ## Fonctionnalités
 
 - navigation dans les dossiers

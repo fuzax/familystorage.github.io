@@ -6,10 +6,10 @@ const searchInput = document.getElementById("searchInput");
 
 async function loadAccount() {
     try {
-        const response = await fetch("/api/auth/me");
+        const response = await fetch(window.familyDriveUrl("/api/auth/me"), { credentials: "include" });
         const data = await response.json();
         if (!data.user) {
-            window.location.assign("/");
+            window.location.assign(`${window.FAMILYDRIVE_BASE_PATH || ""}/auth.html`);
             return;
         }
         document.getElementById("accountName").textContent = data.user.name;
@@ -23,14 +23,14 @@ async function loadAccount() {
         }
         return data.user;
     } catch (error) {
-        window.location.assign("/");
+        window.location.assign(`${window.FAMILYDRIVE_BASE_PATH || ""}/auth.html`);
         return null;
     }
 }
 
 document.getElementById("logoutButton")?.addEventListener("click", async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
-    window.location.assign("/");
+    await fetch(window.familyDriveUrl("/api/auth/logout"), { credentials: "include", method: "POST" });
+    window.location.assign(`${window.FAMILYDRIVE_BASE_PATH || ""}/auth.html`);
 });
 
 async function ensureBox(forceChooser = false) {
@@ -349,7 +349,7 @@ async function renderAdminView() {
 }
 
 async function requestJson(url, options = {}) {
-    const response = await fetch(url, options);
+    const response = await fetch(window.familyDriveUrl(url), { credentials: "include", ...options });
     const data = await response.json();
     if (!response.ok) {
         throw new Error(data.message || "Erreur serveur");
@@ -455,7 +455,7 @@ function renderPreviewModal(itemPath) {
     modal.innerHTML = `
         <div class="preview-card">
             <button class="preview-close" type="button">✕</button>
-            <img class="preview-image" src="/api/download?path=${encodeURIComponent(itemPath)}" alt="Aperçu" />
+            <img class="preview-image" src="${window.familyDriveUrl(`/api/download?path=${encodeURIComponent(itemPath)}`)}" alt="Aperçu" />
         </div>
     `;
 
@@ -657,7 +657,7 @@ function renderFilesView(mode = "files") {
                 <div class="file-grid">
                     ${data.entries.map((entry) => {
                         const isFolder = entry.type === "folder";
-                        const previewUrl = isPreviewableFile(entry.name) ? `/api/download?path=${encodeURIComponent(entry.path)}` : "";
+                        const previewUrl = isPreviewableFile(entry.name) ? window.familyDriveUrl(`/api/download?path=${encodeURIComponent(entry.path)}`) : "";
                         return `
                             <div class="file-card" draggable="true" data-drag-path="${entry.path}" data-drop-path="${isFolder ? entry.path : ""}">
                                 <div class="file-card-preview ${isFolder ? "folder-preview" : ""}">
@@ -669,7 +669,7 @@ function renderFilesView(mode = "files") {
                                 </div>
                                 <div class="row-actions compact">
                                     <button class="action-link" data-open-path="${entry.path}" data-type="${entry.type}" data-name="${entry.name}">${isFolder ? "Ouvrir" : (isPreviewableFile(entry.name) ? "Aperçu" : "Télécharger")}</button>
-                                    ${!isFolder ? `<a class="action-link" href="/api/download?path=${encodeURIComponent(entry.path)}" target="_blank" rel="noreferrer">Télécharger</a><button class="action-link" data-share-path="${entry.path}">Partager</button>` : ""}
+                                    ${!isFolder ? `<a class="action-link" href="${window.familyDriveUrl(`/api/download?path=${encodeURIComponent(entry.path)}`)}" target="_blank" rel="noreferrer">Télécharger</a><button class="action-link" data-share-path="${entry.path}">Partager</button>` : ""}
                                     ${mode !== "trash" ? `<button class="action-link" data-move-path="${entry.path}">Déplacer</button>` : ""}
                                     ${mode !== "trash" ? `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>` : `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>`}
                                 </div>
@@ -707,7 +707,7 @@ function renderFilesView(mode = "files") {
                                         <td>
                                             <div class="row-actions">
                                                 ${mode === "trash" ? `<button class="action-link" data-restore-path="${entry.path}">Restaurer</button>` : ""}
-                                                ${!isFolder && mode !== "trash" ? `<a class="action-link" href="/api/download?path=${encodeURIComponent(entry.path)}" target="_blank" rel="noreferrer">Télécharger</a><button class="action-link" data-share-path="${entry.path}">Partager</button>` : ""}
+                                                ${!isFolder && mode !== "trash" ? `<a class="action-link" href="${window.familyDriveUrl(`/api/download?path=${encodeURIComponent(entry.path)}`)}" target="_blank" rel="noreferrer">Télécharger</a><button class="action-link" data-share-path="${entry.path}">Partager</button>` : ""}
                                                 ${mode === "trash" ? `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>` : `<button class="action-link" data-rename-path="${entry.path}">Renommer</button>`}
                                                 ${mode !== "trash" ? `<button class="action-link" data-move-path="${entry.path}">Déplacer</button>` : ""}
                                                 ${mode !== "trash" ? `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>` : ""}
@@ -821,7 +821,7 @@ async function renderMembersView() {
 async function renderSearchView(query) {
     try {
         const data = await requestJson(`/api/search?q=${encodeURIComponent(query)}`);
-        appView.innerHTML = `<div class="explorer-card"><div class="section-header"><h2>Résultats pour « ${query} »</h2></div><div class="member-list">${data.results.length ? data.results.map((file) => `<div class="member-row"><div><strong>${file.name}</strong><span>${file.path} · ${formatSize(file.size)}</span></div><a class="action-link" href="/api/download?path=${encodeURIComponent(file.path)}" target="_blank" rel="noreferrer">Ouvrir</a></div>`).join("") : "Aucun résultat."}</div></div>`;
+            appView.innerHTML = `<div class="explorer-card"><div class="section-header"><h2>Résultats pour « ${query} »</h2></div><div class="member-list">${data.results.length ? data.results.map((file) => `<div class="member-row"><div><strong>${file.name}</strong><span>${file.path} · ${formatSize(file.size)}</span></div><a class="action-link" href="${window.familyDriveUrl(`/api/download?path=${encodeURIComponent(file.path)}`)}" target="_blank" rel="noreferrer">Ouvrir</a></div>`).join("") : "Aucun résultat."}</div></div>`;
     } catch (error) {
         appView.innerHTML = `<div class="error-box">${error.message}</div>`;
     }

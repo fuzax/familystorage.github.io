@@ -1,0 +1,38 @@
+name: Publier FamilyDrive sur GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+      - name: Préparer uniquement le frontend
+        run: |
+          mkdir site
+          cp index.html auth.html auth.js script.js style.css config.js site/
+      - name: Configurer Pages
+        uses: actions/configure-pages@v5
+      - name: Construire l’artefact Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Déployer
+        id: deployment
+        uses: actions/deploy-pages@v4
