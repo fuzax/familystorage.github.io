@@ -450,6 +450,66 @@ body.dark .box-panel {
     font-size: 12px;
 }
 
+.member-invite-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 22px;
+}
+
+.member-invite-form input,
+.member-invite-form select,
+.member-row select {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--card-strong);
+    color: var(--text);
+}
+
+.member-list,
+.admin-log {
+    display: grid;
+    gap: 8px;
+}
+
+.member-row,
+.admin-log-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 13px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+}
+
+.member-row > div,
+.admin-log-row {
+    min-width: 0;
+}
+
+.member-row span,
+.admin-log-row span {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.admin-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 26px;
+}
+
+.admin-stats .stat {
+    display: grid;
+    gap: 5px;
+}
+
 .nav-link {
     display: flex;
     align-items: center;

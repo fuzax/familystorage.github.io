@@ -39,3 +39,15 @@ L’application contient maintenant :
 - connexion uniquement par e-mail et mot de passe.
 
 La connexion e-mail fonctionne immédiatement. Les comptes sont enregistrés dans `users.json` en local, ou dans le chemin défini par `AUTH_DB_PATH` sur un hébergeur.
+
+## Administration
+
+Pour activer la catégorie Administration pour un compte, ajoute son adresse e-mail dans `admin-emails.json` :
+
+```json
+[
+   "mon-adresse@example.com"
+]
+```
+
+La catégorie reste cachée pour les autres comptes. Elle affiche les statistiques globales et le journal des activités. Le fichier peut être déplacé avec la variable `ADMIN_EMAILS_PATH`.

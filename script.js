@@ -15,6 +15,12 @@ async function loadAccount() {
         document.getElementById("accountName").textContent = data.user.name;
         document.getElementById("accountEmail").textContent = data.user.email;
         document.querySelector(".avatar").textContent = data.user.name.charAt(0).toUpperCase();
+        try {
+            await requestJson("/api/admin/overview");
+            document.getElementById("adminNavButton")?.classList.remove("hidden");
+        } catch (error) {
+            document.getElementById("adminNavButton")?.classList.add("hidden");
+        }
         return data.user;
     } catch (error) {
         window.location.assign("/");
@@ -323,6 +329,25 @@ function renderPlaceholderView(title, text) {
     `;
 }
 
+async function renderAdminView() {
+    appView.innerHTML = `<div class="explorer-card admin-panel"><div class="section-header"><div><p class="eyebrow">ACCÈS ADMINISTRATEUR</p><h2>Vue globale</h2></div></div><div id="adminContent" class="admin-content">Chargement...</div></div>`;
+    try {
+        const overview = await requestJson("/api/admin/overview");
+        document.getElementById("adminContent").innerHTML = `
+            <div class="admin-stats">
+                <div class="stat"><strong>${overview.users}</strong><span>Utilisateurs</span></div>
+                <div class="stat"><strong>${overview.boxes}</strong><span>Box</span></div>
+                <div class="stat"><strong>${overview.members}</strong><span>Accès membres</span></div>
+                <div class="stat"><strong>${overview.usedGb} Go</strong><span>Stockage utilisé</span></div>
+            </div>
+            <h3>Journal des activités</h3>
+            <div class="admin-log">${overview.activities.length ? overview.activities.map((activity) => `<div class="admin-log-row"><strong>${activity.type}</strong><span>${activity.userEmail || "Système"} · ${new Date(activity.createdAt).toLocaleString("fr-FR")}</span></div>`).join("") : "Aucune activité enregistrée."}</div>
+        `;
+    } catch (error) {
+        appView.innerHTML = `<div class="error-box">${error.message}</div>`;
+    }
+}
+
 async function requestJson(url, options = {}) {
     const response = await fetch(url, options);
     const data = await response.json();
@@ -512,6 +537,21 @@ function bindExplorerActions({ filesBody, currentPath, mode }) {
         });
     });
 
+    filesBody.querySelectorAll("[data-share-path]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const password = window.prompt("Mot de passe du lien (laisser vide pour aucun mot de passe) :", "");
+            if (password === null) return;
+            const hours = window.prompt("Durée du lien en heures (1 à 168) :", "24");
+            if (hours === null) return;
+            const result = await requestJson("/api/shares", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: button.dataset.sharePath, password, hours: Number(hours) })
+            });
+            window.prompt("Copiez ce lien de partage :", `${window.location.origin}${result.url}`);
+        });
+    });
+
     filesBody.querySelectorAll("[data-open-path]").forEach((button) => {
         button.addEventListener("click", () => {
             const entryPath = button.dataset.openPath;
@@ -629,7 +669,7 @@ function renderFilesView(mode = "files") {
                                 </div>
                                 <div class="row-actions compact">
                                     <button class="action-link" data-open-path="${entry.path}" data-type="${entry.type}" data-name="${entry.name}">${isFolder ? "Ouvrir" : (isPreviewableFile(entry.name) ? "Aperçu" : "Télécharger")}</button>
-                                    ${!isFolder ? `<a class="action-link" href="/api/download?path=${encodeURIComponent(entry.path)}" target="_blank" rel="noreferrer">Télécharger</a>` : ""}
+                                    ${!isFolder ? `<a class="action-link" href="/api/download?path=${encodeURIComponent(entry.path)}" target="_blank" rel="noreferrer">Télécharger</a><button class="action-link" data-share-path="${entry.path}">Partager</button>` : ""}
                                     ${mode !== "trash" ? `<button class="action-link" data-move-path="${entry.path}">Déplacer</button>` : ""}
                                     ${mode !== "trash" ? `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>` : `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>`}
                                 </div>
@@ -667,7 +707,7 @@ function renderFilesView(mode = "files") {
                                         <td>
                                             <div class="row-actions">
                                                 ${mode === "trash" ? `<button class="action-link" data-restore-path="${entry.path}">Restaurer</button>` : ""}
-                                                ${!isFolder && mode !== "trash" ? `<a class="action-link" href="/api/download?path=${encodeURIComponent(entry.path)}" target="_blank" rel="noreferrer">Télécharger</a>` : ""}
+                                                ${!isFolder && mode !== "trash" ? `<a class="action-link" href="/api/download?path=${encodeURIComponent(entry.path)}" target="_blank" rel="noreferrer">Télécharger</a><button class="action-link" data-share-path="${entry.path}">Partager</button>` : ""}
                                                 ${mode === "trash" ? `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>` : `<button class="action-link" data-rename-path="${entry.path}">Renommer</button>`}
                                                 ${mode !== "trash" ? `<button class="action-link" data-move-path="${entry.path}">Déplacer</button>` : ""}
                                                 ${mode !== "trash" ? `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>` : ""}
@@ -750,6 +790,43 @@ function renderTrashView() {
     renderFilesView("trash");
 }
 
+async function renderMembersView() {
+    appView.innerHTML = `<div class="explorer-card members-panel"><div class="section-header"><div><p class="eyebrow">ESPACE PARTAGÉ</p><h2>Membres et invitations</h2></div></div><div id="membersContent">Chargement...</div></div>`;
+    try {
+        const data = await requestJson("/api/boxes/members");
+        const canManage = state.box?.role === "owner";
+        document.getElementById("membersContent").innerHTML = `
+            ${canManage ? `<form id="inviteMemberForm" class="member-invite-form"><input name="hours" type="number" min="1" max="168" value="72" aria-label="Durée de l’invitation en heures"><select name="role" aria-label="Rôle"><option value="member">Membre</option><option value="readonly">Lecture seule</option></select><button class="small-button primary" type="submit">Créer une invitation</button></form>` : ""}
+            <div class="member-list">${data.members.map((member) => `<div class="member-row"><div><strong>${member.name}</strong><span>${member.email}</span></div><b>${member.role}</b>${canManage && !member.owner ? `<select data-member-role="${member.id}"><option value="member" ${member.role === "member" ? "selected" : ""}>Membre</option><option value="readonly" ${member.role === "readonly" ? "selected" : ""}>Lecture seule</option></select><button class="action-link danger" data-remove-member="${member.id}">Retirer</button>` : ""}</div>`).join("")}</div>
+        `;
+        document.getElementById("inviteMemberForm")?.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const form = new FormData(event.currentTarget);
+            const result = await requestJson("/api/boxes/invitations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hours: form.get("hours"), role: form.get("role") }) });
+            window.prompt("Copiez ce lien d’invitation :", `${window.location.origin}/?invitation=${result.invitation.token}`);
+        });
+        document.querySelectorAll("[data-member-role]").forEach((select) => select.addEventListener("change", async () => {
+            await requestJson(`/api/boxes/members/${select.dataset.memberRole}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: select.value }) });
+        }));
+        document.querySelectorAll("[data-remove-member]").forEach((button) => button.addEventListener("click", async () => {
+            if (!window.confirm("Retirer ce membre de la box ?")) return;
+            await requestJson(`/api/boxes/members/${button.dataset.removeMember}`, { method: "DELETE" });
+            renderMembersView();
+        }));
+    } catch (error) {
+        appView.innerHTML = `<div class="error-box">${error.message}</div>`;
+    }
+}
+
+async function renderSearchView(query) {
+    try {
+        const data = await requestJson(`/api/search?q=${encodeURIComponent(query)}`);
+        appView.innerHTML = `<div class="explorer-card"><div class="section-header"><h2>Résultats pour « ${query} »</h2></div><div class="member-list">${data.results.length ? data.results.map((file) => `<div class="member-row"><div><strong>${file.name}</strong><span>${file.path} · ${formatSize(file.size)}</span></div><a class="action-link" href="/api/download?path=${encodeURIComponent(file.path)}" target="_blank" rel="noreferrer">Ouvrir</a></div>`).join("") : "Aucun résultat."}</div></div>`;
+    } catch (error) {
+        appView.innerHTML = `<div class="error-box">${error.message}</div>`;
+    }
+}
+
 function switchView(view) {
     state.view = view;
     const navButtons = document.querySelectorAll(".nav-link");
@@ -774,6 +851,11 @@ function switchView(view) {
         return;
     }
 
+    if (view === "members") {
+        renderMembersView();
+        return;
+    }
+
     if (view === "albums") {
         renderPlaceholderView("Albums", "Les albums arrivent bientôt pour organiser vos souvenirs.");
         return;
@@ -781,6 +863,11 @@ function switchView(view) {
 
     if (view === "favorites") {
         renderPlaceholderView("Favoris", "Vos fichiers favoris seront affichés ici.");
+        return;
+    }
+
+    if (view === "admin") {
+        renderAdminView();
         return;
     }
 
@@ -815,6 +902,8 @@ themeButton.addEventListener("click", () => {
 searchInput.addEventListener("input", (event) => {
     if (state.view === "home") {
         renderPhotosHome(event.target.value);
+    } else if (event.target.value.trim().length >= 2) {
+        renderSearchView(event.target.value.trim());
     }
 });
 
@@ -830,6 +919,16 @@ document.querySelectorAll(".nav-link").forEach((button) => {
 async function initApp() {
     const user = await loadAccount();
     if (!user) return;
+    const invitationToken = new URLSearchParams(window.location.search).get("invitation");
+    if (invitationToken) {
+        try {
+            const result = await requestJson("/api/boxes/join-invitation", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: invitationToken }) });
+            state.box = result.box;
+            window.history.replaceState({}, "", window.location.pathname);
+        } catch (error) {
+            window.alert(error.message);
+        }
+    }
     const box = await ensureBox();
     if (!box) return;
     refreshBoxPanel();

@@ -13,6 +13,9 @@ const TRASH_ROOT = process.env.TRASH_ROOT || path.join(__dirname, "trash");
 const TMP_UPLOAD_DIR = process.env.TMP_UPLOAD_DIR || path.join(__dirname, "tmp-uploads");
 const AUTH_DB_PATH = process.env.AUTH_DB_PATH || path.join(__dirname, "users.json");
 const BOXES_DB_PATH = process.env.BOXES_DB_PATH || path.join(__dirname, "boxes.json");
+const ADMIN_EMAILS_PATH = process.env.ADMIN_EMAILS_PATH || path.join(__dirname, "admin-emails.json");
+const ACTIVITY_LOG_PATH = process.env.ACTIVITY_LOG_PATH || path.join(__dirname, "activity.json");
+const SHARES_DB_PATH = process.env.SHARES_DB_PATH || path.join(__dirname, "shares.json");
 const BOXES_ROOT = process.env.BOXES_ROOT || path.join(__dirname, "boxes");
 const BOX_QUOTA_BYTES = 30 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_FILE_BYTES = Number(process.env.MAX_UPLOAD_FILE_BYTES) || 5 * 1024 * 1024 * 1024;
@@ -93,6 +96,55 @@ function writeBoxes(boxes) {
     fs.writeFileSync(BOXES_DB_PATH, JSON.stringify(boxes, null, 2));
 }
 
+function readAdminEmails() {
+    if (!fs.existsSync(ADMIN_EMAILS_PATH)) return [];
+    try {
+        const emails = JSON.parse(fs.readFileSync(ADMIN_EMAILS_PATH, "utf8"));
+        return Array.isArray(emails) ? emails.map((email) => String(email).trim().toLowerCase()).filter(Boolean) : [];
+    } catch (error) {
+        return [];
+    }
+}
+
+function isAdmin(user) {
+    return Boolean(user && readAdminEmails().includes(String(user.email).toLowerCase()));
+}
+
+function readActivities() {
+    if (!fs.existsSync(ACTIVITY_LOG_PATH)) return [];
+    try {
+        const activities = JSON.parse(fs.readFileSync(ACTIVITY_LOG_PATH, "utf8"));
+        return Array.isArray(activities) ? activities : [];
+    } catch (error) {
+        return [];
+    }
+}
+
+function recordActivity(type, user, box, details = {}) {
+    const activities = readActivities();
+    activities.unshift({ id: crypto.randomUUID(), type, userId: user?.id || null, userEmail: user?.email || null, boxId: box?.id || null, boxName: box?.name || null, details, createdAt: new Date().toISOString() });
+    fs.writeFileSync(ACTIVITY_LOG_PATH, JSON.stringify(activities.slice(0, 1000), null, 2));
+}
+
+function getBoxRole(box, userId) {
+    if (box.ownerId === userId) return "owner";
+    return box.roles?.[userId] || "member";
+}
+
+function readShares() {
+    if (!fs.existsSync(SHARES_DB_PATH)) return [];
+    try {
+        const shares = JSON.parse(fs.readFileSync(SHARES_DB_PATH, "utf8"));
+        return Array.isArray(shares) ? shares : [];
+    } catch (error) {
+        return [];
+    }
+}
+
+function writeShares(shares) {
+    fs.writeFileSync(SHARES_DB_PATH, JSON.stringify(shares, null, 2));
+}
+
 function getBoxRoots(box) {
     const root = path.join(BOXES_ROOT, box.id);
     return { storage: path.join(root, "storage"), trash: path.join(root, "trash") };
@@ -121,7 +173,7 @@ function setActiveBox(res, boxId) {
 
 function publicBox(box, userId) {
     const stats = getStorageStats(ensureBoxRoots(box).storage);
-    return { id: box.id, name: box.name, code: box.code, quotaGb: 30, usedGb: stats.usedGb, usedPercent: stats.usedPercent, owner: box.ownerId === userId, memberCount: box.members.length };
+    return { id: box.id, name: box.name, code: box.code, quotaGb: 30, usedGb: stats.usedGb, usedPercent: stats.usedPercent, owner: box.ownerId === userId, role: getBoxRole(box, userId), memberCount: box.members.length };
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
@@ -363,7 +415,7 @@ app.use(express.urlencoded({ extended: true, limit: "32kb" }));
 app.use((req, res, next) => {
     if (req.path.startsWith("/api/")) return next();
     const publicFiles = new Set(["/", "/index.html", "/auth.html", "/auth.js", "/script.js", "/style.css"]);
-    if (publicFiles.has(req.path)) return next();
+    if (publicFiles.has(req.path) || req.path.startsWith("/share/")) return next();
     return res.status(404).send("Not found");
 });
 app.use(express.static(__dirname, { index: false }));
@@ -444,10 +496,11 @@ app.post("/api/boxes", (req, res) => {
         code = crypto.randomBytes(8).toString("hex").toUpperCase();
     } while (boxes.some((box) => box.code === code));
 
-    const box = { id: crypto.randomUUID(), name, code, ownerId: user.id, members: [user.id], createdAt: new Date().toISOString() };
+    const box = { id: crypto.randomUUID(), name, code, ownerId: user.id, members: [user.id], roles: { [user.id]: "owner" }, invitations: [], createdAt: new Date().toISOString() };
     boxes.push(box);
     writeBoxes(boxes);
     ensureBoxRoots(box);
+    recordActivity("box.created", user, box);
     setActiveBox(res, box.id);
     res.status(201).json({ box: publicBox(box, user.id) });
 });
@@ -461,9 +514,12 @@ app.post("/api/boxes/join", rateLimit, (req, res) => {
     const box = boxes.find((candidate) => candidate.code === code);
     if (!box) return res.status(404).json({ message: "Aucune box ne correspond à ce code." });
     if (!box.members.includes(user.id)) box.members.push(user.id);
+    box.roles = box.roles || {};
+    if (!box.roles[user.id]) box.roles[user.id] = "member";
     writeBoxes(boxes);
     ensureBoxRoots(box);
     setActiveBox(res, box.id);
+    recordActivity("box.joined", user, box);
     res.json({ box: publicBox(box, user.id) });
 });
 
@@ -476,11 +532,182 @@ app.post("/api/boxes/select", (req, res) => {
     res.json({ box: publicBox(box, user.id) });
 });
 
+app.get("/api/boxes/members", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user) return res.status(401).json({ message: "Connexion requise." });
+    if (!box) return res.status(409).json({ message: "Aucune box active." });
+    const users = readUsers();
+    res.json({ members: box.members.map((userId) => {
+        const member = users.find((candidate) => candidate.id === userId);
+        return { id: userId, name: member?.name || "Compte supprimé", email: member?.email || "", role: getBoxRole(box, userId), owner: box.ownerId === userId };
+    }) });
+});
+
+app.post("/api/boxes/invitations", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user) return res.status(401).json({ message: "Connexion requise." });
+    if (!box || getBoxRole(box, user.id) !== "owner") return res.status(403).json({ message: "Seul le propriétaire peut inviter des membres." });
+    const role = req.body?.role === "readonly" ? "readonly" : "member";
+    const hours = Math.min(168, Math.max(1, Number(req.body?.hours) || 72));
+    const invitation = { token: crypto.randomBytes(24).toString("hex"), role, expiresAt: new Date(Date.now() + hours * 60 * 60 * 1000).toISOString(), revoked: false };
+    box.invitations = (box.invitations || []).filter((item) => !item.revoked && new Date(item.expiresAt).getTime() > Date.now());
+    box.invitations.push(invitation);
+    const boxes = readBoxes();
+    const index = boxes.findIndex((candidate) => candidate.id === box.id);
+    boxes[index] = box;
+    writeBoxes(boxes);
+    recordActivity("invitation.created", user, box, { role, expiresAt: invitation.expiresAt });
+    res.status(201).json({ invitation });
+});
+
+app.delete("/api/boxes/invitations/:token", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user || !box) return res.status(401).json({ message: "Connexion requise." });
+    if (getBoxRole(box, user.id) !== "owner") return res.status(403).json({ message: "Droits insuffisants." });
+    const invitation = (box.invitations || []).find((item) => item.token === req.params.token);
+    if (!invitation) return res.status(404).json({ message: "Invitation introuvable." });
+    invitation.revoked = true;
+    const boxes = readBoxes();
+    boxes[boxes.findIndex((candidate) => candidate.id === box.id)] = box;
+    writeBoxes(boxes);
+    res.json({ ok: true });
+});
+
+app.post("/api/boxes/join-invitation", rateLimit, (req, res) => {
+    const user = getCurrentUser(req);
+    if (!user) return res.status(401).json({ message: "Connexion requise." });
+    const token = String(req.body?.token || "").trim();
+    const boxes = readBoxes();
+    const box = boxes.find((candidate) => (candidate.invitations || []).some((item) => item.token === token && !item.revoked && new Date(item.expiresAt).getTime() > Date.now()));
+    if (!box) return res.status(404).json({ message: "Invitation expirée ou révoquée." });
+    const invitation = box.invitations.find((item) => item.token === token);
+    if (!box.members.includes(user.id)) box.members.push(user.id);
+    box.roles = box.roles || {};
+    box.roles[user.id] = invitation.role;
+    writeBoxes(boxes);
+    setActiveBox(res, box.id);
+    recordActivity("box.joined_invitation", user, box, { role: invitation.role });
+    res.json({ box: publicBox(box, user.id) });
+});
+
+app.patch("/api/boxes/members/:userId", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user || !box) return res.status(401).json({ message: "Connexion requise." });
+    if (getBoxRole(box, user.id) !== "owner" || req.params.userId === box.ownerId) return res.status(403).json({ message: "Droits insuffisants." });
+    if (!box.members.includes(req.params.userId)) return res.status(404).json({ message: "Membre introuvable." });
+    const role = req.body?.role === "readonly" ? "readonly" : "member";
+    box.roles = box.roles || {};
+    box.roles[req.params.userId] = role;
+    const boxes = readBoxes();
+    boxes[boxes.findIndex((candidate) => candidate.id === box.id)] = box;
+    writeBoxes(boxes);
+    recordActivity("member.role_changed", user, box, { memberId: req.params.userId, role });
+    res.json({ ok: true });
+});
+
+app.delete("/api/boxes/members/:userId", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user || !box) return res.status(401).json({ message: "Connexion requise." });
+    if (getBoxRole(box, user.id) !== "owner" || req.params.userId === box.ownerId) return res.status(403).json({ message: "Droits insuffisants." });
+    box.members = box.members.filter((memberId) => memberId !== req.params.userId);
+    if (box.roles) delete box.roles[req.params.userId];
+    const boxes = readBoxes();
+    boxes[boxes.findIndex((candidate) => candidate.id === box.id)] = box;
+    writeBoxes(boxes);
+    recordActivity("member.removed", user, box, { memberId: req.params.userId });
+    res.json({ ok: true });
+});
+
+app.post("/api/shares", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user || !box) return res.status(401).json({ message: "Connexion requise." });
+    if (getBoxRole(box, user.id) === "readonly") return res.status(403).json({ message: "Ce membre ne peut pas partager de fichier." });
+    const relativePath = normalizeRelativePath(req.body?.path || "");
+    const roots = ensureBoxRoots(box);
+    const filePath = safeTargetPath(relativePath, roots.storage);
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) return res.status(404).json({ message: "Fichier introuvable." });
+    const hours = Math.min(168, Math.max(1, Number(req.body?.hours) || 24));
+    const password = String(req.body?.password || "");
+    const share = { token: crypto.randomBytes(32).toString("hex"), boxId: box.id, path: relativePath, passwordHash: password ? hashPassword(password) : null, expiresAt: new Date(Date.now() + hours * 60 * 60 * 1000).toISOString(), createdBy: user.id };
+    const shares = readShares().filter((item) => new Date(item.expiresAt).getTime() > Date.now());
+    shares.push(share);
+    writeShares(shares);
+    recordActivity("file.shared", user, box, { path: relativePath, expiresAt: share.expiresAt });
+    res.status(201).json({ url: `/share/${share.token}`, expiresAt: share.expiresAt, protected: Boolean(password) });
+});
+
+app.delete("/api/shares/:token", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user || !box) return res.status(401).json({ message: "Connexion requise." });
+    const shares = readShares();
+    const share = shares.find((item) => item.token === req.params.token && item.boxId === box.id);
+    if (!share || (share.createdBy !== user.id && getBoxRole(box, user.id) !== "owner")) return res.status(404).json({ message: "Lien introuvable." });
+    writeShares(shares.filter((item) => item.token !== req.params.token));
+    res.json({ ok: true });
+});
+
+app.get("/share/:token", (req, res) => {
+    const share = readShares().find((item) => item.token === req.params.token);
+    if (!share || new Date(share.expiresAt).getTime() <= Date.now()) return res.status(404).send("Lien expiré ou introuvable.");
+    if (share.passwordHash && !verifyPassword(String(req.query.password || ""), share.passwordHash)) return res.status(401).send("Mot de passe requis ou incorrect.");
+    const box = readBoxes().find((candidate) => candidate.id === share.boxId);
+    if (!box) return res.status(404).send("Box introuvable.");
+    const filePath = safeTargetPath(share.path, ensureBoxRoots(box).storage);
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) return res.status(404).send("Fichier introuvable.");
+    res.download(filePath);
+});
+
+app.get("/api/search", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user || !box) return res.status(401).json({ message: "Connexion requise." });
+    const query = String(req.query.q || "").trim().toLowerCase();
+    const type = String(req.query.type || "all").toLowerCase();
+    const roots = ensureBoxRoots(box);
+    const results = [];
+    function walk(directory, relativeDirectory = "") {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const absolute = path.join(directory, entry.name);
+            const relative = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) walk(absolute, relative);
+            else {
+                const extension = path.extname(entry.name).slice(1).toLowerCase();
+                const matchesType = type === "all" || (type === "image" && /^(png|jpe?g|gif|webp|svg)$/.test(extension)) || (type === "video" && /^(mp4|mov|webm|mkv)$/.test(extension)) || (type === "document" && /^(pdf|docx?|xlsx?|txt)$/.test(extension));
+                if ((!query || entry.name.toLowerCase().includes(query)) && matchesType) {
+                    const stat = fs.statSync(absolute);
+                    results.push({ name: entry.name, path: relative, size: stat.size, modifiedAt: stat.mtime.toISOString(), type: extension });
+                }
+            }
+        }
+    }
+    walk(roots.storage);
+    res.json({ results: results.slice(0, 500) });
+});
+
+app.get("/api/admin/overview", (req, res) => {
+    const user = getCurrentUser(req);
+    if (!isAdmin(user)) return res.status(404).json({ message: "Ressource introuvable." });
+    const boxes = readBoxes();
+    const users = readUsers();
+    const usedBytes = boxes.reduce((total, box) => total + getStorageStats(ensureBoxRoots(box).storage).usedBytes, 0);
+    res.json({ users: users.length, boxes: boxes.length, members: boxes.reduce((total, box) => total + box.members.length, 0), usedGb: (usedBytes / (1024 ** 3)).toFixed(2), activities: readActivities().slice(0, 100) });
+});
+
 app.use("/api", (req, res, next) => {
-    if (req.path.startsWith("/auth/") || req.path === "/health") return next();
+    if (req.path.startsWith("/auth/") || req.path === "/health" || req.path.startsWith("/admin/")) return next();
     if (!getCurrentUser(req)) return res.status(401).json({ message: "Connexion requise." });
     if (!req.path.startsWith("/boxes") && !getActiveBox(req)) {
         return res.status(409).json({ message: "Sélectionnez ou créez une box pour continuer." });
+    }
+    if (["POST", "PATCH", "PUT", "DELETE"].includes(req.method) && getBoxRole(getActiveBox(req), getCurrentUser(req).id) === "readonly") {
+        return res.status(403).json({ message: "Accès en lecture seule pour cette box." });
     }
     next();
 });
