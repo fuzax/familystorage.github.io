@@ -122,6 +122,15 @@ const state = {
     box: null
 };
 
+async function getFavoritePaths() {
+    try {
+        const data = await requestJson("/api/favorites");
+        return new Set(data.favorites.map((favorite) => favorite.path));
+    } catch (error) {
+        return new Set();
+    }
+}
+
 async function refreshBoxPanel() {
     const boxList = document.getElementById("boxList");
     if (!boxList) return;
@@ -393,7 +402,14 @@ async function renderAdminView() {
 }
 
 async function requestJson(url, options = {}) {
-    const response = await fetch(window.familyDriveUrl(url), { credentials: "include", ...options });
+    const method = String(options.method || "GET").toUpperCase();
+    const headers = new Headers(options.headers || {});
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+        const csrfResponse = await fetch(window.familyDriveUrl("/api/csrf"), { credentials: "include" });
+        const csrfData = await csrfResponse.json();
+        if (csrfResponse.ok && csrfData.token) headers.set("X-CSRF-Token", csrfData.token);
+    }
+    const response = await fetch(window.familyDriveUrl(url), { credentials: "include", ...options, headers });
     const data = await response.json();
     if (!response.ok) {
         throw new Error(data.message || "Erreur serveur");
@@ -596,6 +612,21 @@ function bindExplorerActions({ filesBody, currentPath, mode }) {
         });
     });
 
+    filesBody.querySelectorAll("[data-favorite-path]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const favoritePath = button.dataset.favoritePath;
+            if (button.dataset.favorite === "true") {
+                await requestJson(`/api/favorites?path=${encodeURIComponent(favoritePath)}`, { method: "DELETE" });
+                button.dataset.favorite = "false";
+                button.textContent = "☆ Favori";
+            } else {
+                await requestJson("/api/favorites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: favoritePath }) });
+                button.dataset.favorite = "true";
+                button.textContent = "★ Favori";
+            }
+        });
+    });
+
     filesBody.querySelectorAll("[data-open-path]").forEach((button) => {
         button.addEventListener("click", () => {
             const entryPath = button.dataset.openPath;
@@ -666,7 +697,8 @@ function renderFilesView(mode = "files") {
 
     const loadData = mode === "trash" ? loadTrash : loadFiles;
 
-    loadData().then((data) => {
+    loadData().then(async (data) => {
+        const favoritePaths = mode === "trash" ? new Set() : await getFavoritePaths();
         const breadcrumb = document.getElementById("breadcrumb");
         const filesContainer = document.getElementById("filesContainer");
         const pathValue = mode === "trash" ? "Corbeille" : data.currentPath;
@@ -714,6 +746,7 @@ function renderFilesView(mode = "files") {
                                 <div class="row-actions compact">
                                     <button class="action-link" data-open-path="${entry.path}" data-type="${entry.type}" data-name="${entry.name}">${isFolder ? "Ouvrir" : (isPreviewableFile(entry.name) ? "Aperçu" : "Télécharger")}</button>
                                     ${!isFolder ? `<a class="action-link" href="${window.familyDriveUrl(`/api/download?path=${encodeURIComponent(entry.path)}`)}" target="_blank" rel="noreferrer">Télécharger</a><button class="action-link" data-share-path="${entry.path}">Partager</button>` : ""}
+                                    ${mode !== "trash" ? `<button class="action-link" data-favorite-path="${entry.path}" data-favorite="${favoritePaths.has(entry.path)}">${favoritePaths.has(entry.path) ? "★ Favori" : "☆ Favori"}</button>` : ""}
                                     ${mode !== "trash" ? `<button class="action-link" data-move-path="${entry.path}">Déplacer</button>` : ""}
                                     ${mode !== "trash" ? `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>` : `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>`}
                                 </div>
@@ -752,6 +785,7 @@ function renderFilesView(mode = "files") {
                                             <div class="row-actions">
                                                 ${mode === "trash" ? `<button class="action-link" data-restore-path="${entry.path}">Restaurer</button>` : ""}
                                                 ${!isFolder && mode !== "trash" ? `<a class="action-link" href="${window.familyDriveUrl(`/api/download?path=${encodeURIComponent(entry.path)}`)}" target="_blank" rel="noreferrer">Télécharger</a><button class="action-link" data-share-path="${entry.path}">Partager</button>` : ""}
+                                                ${mode !== "trash" ? `<button class="action-link" data-favorite-path="${entry.path}" data-favorite="${favoritePaths.has(entry.path)}">${favoritePaths.has(entry.path) ? "★ Favori" : "☆ Favori"}</button>` : ""}
                                                 ${mode === "trash" ? `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>` : `<button class="action-link" data-rename-path="${entry.path}">Renommer</button>`}
                                                 ${mode !== "trash" ? `<button class="action-link" data-move-path="${entry.path}">Déplacer</button>` : ""}
                                                 ${mode !== "trash" ? `<button class="action-link danger" data-delete-path="${entry.path}">Supprimer</button>` : ""}
@@ -969,6 +1003,37 @@ async function renderAssistantView() {
     });
 }
 
+async function renderFavoritesView() {
+    appView.innerHTML = `<div class="explorer-card"><div class="section-header"><div><p class="eyebrow">VOS SÉLECTIONS</p><h2>Favoris</h2></div></div><div id="favoritesContent" class="admin-log">Chargement...</div></div>`;
+    try {
+        const data = await requestJson("/api/favorites");
+        const content = document.getElementById("favoritesContent");
+        if (!data.favorites.length) {
+            content.innerHTML = "Aucun favori pour le moment.";
+            return;
+        }
+        content.innerHTML = data.favorites.map((favorite) => `<div class="admin-log-row"><div><strong>${escapeHtml(favorite.name)}</strong><span>${escapeHtml(favorite.path)} · ${favorite.type === "folder" ? "Dossier" : formatSize(favorite.size)}</span></div><div class="row-actions"><button class="action-link" data-favorite-open="${escapeHtml(favorite.path)}" data-favorite-type="${favorite.type}">${favorite.type === "folder" ? "Ouvrir" : "Aperçu"}</button>${favorite.type !== "folder" ? `<a class="action-link" href="${window.familyDriveUrl(`/api/download?path=${encodeURIComponent(favorite.path)}`)}" target="_blank" rel="noreferrer">Télécharger</a>` : ""}<button class="action-link danger" data-favorite-remove="${escapeHtml(favorite.path)}">Retirer</button></div></div>`).join("");
+        content.querySelectorAll("[data-favorite-remove]").forEach((button) => {
+            button.addEventListener("click", async () => {
+                await requestJson(`/api/favorites?path=${encodeURIComponent(button.dataset.favoriteRemove)}`, { method: "DELETE" });
+                renderFavoritesView();
+            });
+        });
+        content.querySelectorAll("[data-favorite-open]").forEach((button) => {
+            button.addEventListener("click", () => {
+                if (button.dataset.favoriteType === "folder") {
+                    state.currentPath = button.dataset.favoriteOpen;
+                    switchView("files");
+                } else if (isPreviewableFile(button.dataset.favoriteOpen)) {
+                    renderPreviewModal(button.dataset.favoriteOpen);
+                }
+            });
+        });
+    } catch (error) {
+        appView.innerHTML = `<div class="error-box">${escapeHtml(error.message)}</div>`;
+    }
+}
+
 function switchView(view) {
     state.view = view;
     const navButtons = document.querySelectorAll(".nav-link");
@@ -1009,7 +1074,7 @@ function switchView(view) {
     }
 
     if (view === "favorites") {
-        renderPlaceholderView("Favoris", "Vos fichiers favoris seront affichés ici.");
+        renderFavoritesView();
         return;
     }
 

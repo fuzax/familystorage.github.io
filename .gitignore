@@ -6,5 +6,6 @@ tmp-uploads/*
 boxes.json
 boxes/*
 shares.json
+favorites.json
 activity.json
 .env

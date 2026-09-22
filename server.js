@@ -19,9 +19,11 @@ const BOXES_DB_PATH = process.env.BOXES_DB_PATH || path.join(__dirname, "boxes.j
 const ADMIN_EMAILS_PATH = process.env.ADMIN_EMAILS_PATH || path.join(__dirname, "admin-emails.json");
 const ACTIVITY_LOG_PATH = process.env.ACTIVITY_LOG_PATH || path.join(__dirname, "activity.json");
 const SHARES_DB_PATH = process.env.SHARES_DB_PATH || path.join(__dirname, "shares.json");
+const FAVORITES_DB_PATH = process.env.FAVORITES_DB_PATH || path.join(__dirname, "favorites.json");
 const BOXES_ROOT = process.env.BOXES_ROOT || path.join(__dirname, "boxes");
 const BOX_QUOTA_BYTES = 30 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_FILE_BYTES = Number(process.env.MAX_UPLOAD_FILE_BYTES) || 5 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_REQUEST_BYTES = Number(process.env.MAX_UPLOAD_REQUEST_BYTES) || 512 * 1024 * 1024;
 const MAX_REQUESTS_PER_WINDOW = 120;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
@@ -40,11 +42,29 @@ fs.mkdirSync(BOXES_ROOT, { recursive: true });
 
 const upload = multer({
     dest: TMP_UPLOAD_DIR,
-    limits: { files: 200, fileSize: MAX_UPLOAD_FILE_BYTES }
+    limits: { files: 200, fileSize: Math.min(MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_REQUEST_BYTES), fieldSize: 32 * 1024 }
 });
 
 function getClientAddress(req) {
     return String(req.ip || req.socket.remoteAddress || "unknown");
+}
+
+function getCookie(req, name) {
+    const cookies = String(req.headers.cookie || "").split(";");
+    const cookie = cookies.find((item) => item.trim().startsWith(`${name}=`));
+    return cookie ? decodeURIComponent(cookie.split("=").slice(1).join("=").trim()) : "";
+}
+
+function setCsrfCookie(res, token) {
+    const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+    const sameSite = process.env.NODE_ENV === "production" ? "None" : "Lax";
+    res.setHeader("Set-Cookie", `familydrive_csrf=${encodeURIComponent(token)}; Path=/; SameSite=${sameSite}; Max-Age=86400${secure}`);
+}
+
+function ensureCsrfToken(req, res) {
+    const token = getCookie(req, "familydrive_csrf") || crypto.randomBytes(32).toString("hex");
+    if (!getCookie(req, "familydrive_csrf")) setCsrfCookie(res, token);
+    return token;
 }
 
 function rateLimit(req, res, next) {
@@ -84,7 +104,7 @@ function corsHeaders(req, res, next) {
     if (origin && allowedOrigins.has(origin)) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Access-Control-Allow-Credentials", "true");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token");
         res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
     }
     if (req.method === "OPTIONS") return res.sendStatus(204);
@@ -168,6 +188,21 @@ function readShares() {
 
 function writeShares(shares) {
     fs.writeFileSync(SHARES_DB_PATH, JSON.stringify(shares, null, 2));
+}
+
+function readFavorites() {
+    if (!fs.existsSync(FAVORITES_DB_PATH)) return [];
+    try {
+        const favorites = JSON.parse(fs.readFileSync(FAVORITES_DB_PATH, "utf8"));
+        return Array.isArray(favorites) ? favorites : [];
+    } catch (error) {
+        return [];
+    }
+}
+
+function writeFavorites(favorites) {
+    fs.mkdirSync(path.dirname(FAVORITES_DB_PATH), { recursive: true });
+    fs.writeFileSync(FAVORITES_DB_PATH, JSON.stringify(favorites, null, 2));
 }
 
 function getBoxRoots(box) {
@@ -441,6 +476,18 @@ app.use(corsHeaders);
 app.use(express.json({ limit: "32kb" }));
 app.use(express.urlencoded({ extended: true, limit: "32kb" }));
 app.use((req, res, next) => {
+    ensureCsrfToken(req, res);
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method) || !req.path.startsWith("/api/")) return next();
+    if (req.path.startsWith("/api/auth/") || req.path === "/api/csrf" || req.path === "/api/health") return next();
+
+    const cookieToken = getCookie(req, "familydrive_csrf");
+    const headerToken = String(req.headers["x-csrf-token"] || "");
+    if (!cookieToken || !headerToken || cookieToken.length !== headerToken.length || !crypto.timingSafeEqual(Buffer.from(cookieToken), Buffer.from(headerToken))) {
+        return res.status(403).json({ message: "Jeton CSRF invalide." });
+    }
+    next();
+});
+app.use((req, res, next) => {
     if (req.path.startsWith("/api/")) return next();
     const publicFiles = new Set(["/", "/index.html", "/auth.html", "/auth.js", "/script.js", "/style.css", "/config.js"]);
     if (publicFiles.has(req.path) || req.path.startsWith("/share/")) return next();
@@ -450,6 +497,10 @@ app.use(express.static(__dirname, { index: false }));
 
 app.get("/api/auth/me", (req, res) => {
     res.json({ user: publicUser(getCurrentUser(req)) });
+});
+
+app.get("/api/csrf", (req, res) => {
+    res.json({ token: ensureCsrfToken(req, res) });
 });
 
 app.post("/api/auth/register", rateLimit, (req, res) => {
@@ -650,6 +701,46 @@ app.delete("/api/boxes/members/:userId", (req, res) => {
     boxes[boxes.findIndex((candidate) => candidate.id === box.id)] = box;
     writeBoxes(boxes);
     recordActivity("member.removed", user, box, { memberId: req.params.userId });
+    res.json({ ok: true });
+});
+
+app.get("/api/favorites", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user || !box) return res.status(401).json({ message: "Connexion requise." });
+    const roots = ensureBoxRoots(box);
+    const favorites = readFavorites()
+        .filter((favorite) => favorite.userId === user.id && favorite.boxId === box.id)
+        .map((favorite) => {
+            const target = safeTargetPath(favorite.path, roots.storage);
+            if (!fs.existsSync(target)) return null;
+            const stats = fs.statSync(target);
+            return { path: favorite.path, name: path.basename(favorite.path), type: stats.isDirectory() ? "folder" : "file", size: stats.isDirectory() ? 0 : stats.size, modifiedAt: stats.mtime.toISOString() };
+        })
+        .filter(Boolean);
+    res.json({ favorites });
+});
+
+app.post("/api/favorites", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user || !box) return res.status(401).json({ message: "Connexion requise." });
+    const favoritePath = normalizeRelativePath(req.body?.path || "");
+    if (!favoritePath) return res.status(400).json({ message: "Élément favori invalide." });
+    const target = safeTargetPath(favoritePath, ensureBoxRoots(box).storage);
+    if (!fs.existsSync(target)) return res.status(404).json({ message: "Élément introuvable." });
+    const favorites = readFavorites().filter((favorite) => !(favorite.userId === user.id && favorite.boxId === box.id && favorite.path === favoritePath));
+    favorites.push({ userId: user.id, boxId: box.id, path: favoritePath, createdAt: new Date().toISOString() });
+    writeFavorites(favorites);
+    res.status(201).json({ ok: true });
+});
+
+app.delete("/api/favorites", (req, res) => {
+    const user = getCurrentUser(req);
+    const box = getActiveBox(req);
+    if (!user || !box) return res.status(401).json({ message: "Connexion requise." });
+    const favoritePath = normalizeRelativePath(req.query.path || "");
+    writeFavorites(readFavorites().filter((favorite) => !(favorite.userId === user.id && favorite.boxId === box.id && favorite.path === favoritePath)));
     res.json({ ok: true });
 });
 
@@ -931,7 +1022,13 @@ app.post("/api/folders", (req, res) => {
     }
 });
 
-app.post("/api/upload", upload.array("files", 200), (req, res) => {
+app.post("/api/upload", (req, res, next) => {
+    const contentLength = Number(req.headers["content-length"] || 0);
+    if (contentLength > MAX_UPLOAD_REQUEST_BYTES) {
+        return res.status(413).json({ message: "La taille totale du téléversement est limitée à 512 Mo." });
+    }
+    next();
+}, upload.array("files", 200), (req, res) => {
     try {
         const storageRoot = ensureBoxRoots(getActiveBox(req)).storage;
         const currentPath = normalizeRelativePath(req.body?.path || "");
