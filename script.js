@@ -332,20 +332,61 @@ function renderPlaceholderView(title, text) {
     `;
 }
 
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 async function renderAdminView() {
     appView.innerHTML = `<div class="explorer-card admin-panel"><div class="section-header"><div><p class="eyebrow">ACCÈS ADMINISTRATEUR</p><h2>Vue globale</h2></div></div><div id="adminContent" class="admin-content">Chargement...</div></div>`;
     try {
         const overview = await requestJson("/api/admin/overview");
-        document.getElementById("adminContent").innerHTML = `
+        const adminContent = document.getElementById("adminContent");
+        adminContent.innerHTML = `
             <div class="admin-stats">
                 <div class="stat"><strong>${overview.users}</strong><span>Utilisateurs</span></div>
                 <div class="stat"><strong>${overview.boxes}</strong><span>Box</span></div>
                 <div class="stat"><strong>${overview.members}</strong><span>Accès membres</span></div>
                 <div class="stat"><strong>${overview.usedGb} Go</strong><span>Stockage utilisé</span></div>
             </div>
-            <h3>Journal des activités</h3>
-            <div class="admin-log">${overview.activities.length ? overview.activities.map((activity) => `<div class="admin-log-row"><strong>${activity.type}</strong><span>${activity.userEmail || "Système"} · ${new Date(activity.createdAt).toLocaleString("fr-FR")}</span></div>`).join("") : "Aucune activité enregistrée."}</div>
+            <div class="admin-section">
+                <div class="admin-section-heading"><h3>Utilisateurs</h3><input id="adminUserSearch" type="search" placeholder="Rechercher un utilisateur" aria-label="Rechercher un utilisateur"></div>
+                <div id="adminUsers" class="admin-log"></div>
+            </div>
+            <div class="admin-section">
+                <div class="admin-section-heading"><h3>Box</h3><input id="adminBoxSearch" type="search" placeholder="Rechercher une box" aria-label="Rechercher une box"></div>
+                <div id="adminBoxes" class="admin-log"></div>
+            </div>
+            <div class="admin-section">
+                <div class="admin-section-heading"><h3>Journal des activités</h3><input id="adminActivitySearch" type="search" placeholder="Filtrer les activités" aria-label="Filtrer les activités"></div>
+                <div id="adminActivities" class="admin-log"></div>
+            </div>
         `;
+        const renderUsers = (query = "") => {
+            const normalizedQuery = query.trim().toLocaleLowerCase();
+            const users = overview.usersList.filter((candidate) => `${candidate.name} ${candidate.email}`.toLocaleLowerCase().includes(normalizedQuery));
+            document.getElementById("adminUsers").innerHTML = users.length ? users.map((candidate) => `<div class="admin-log-row"><div><strong>${escapeHtml(candidate.name)}</strong><span>${escapeHtml(candidate.email)} · ${escapeHtml(candidate.provider || "email")}</span></div><time>${new Date(candidate.createdAt).toLocaleDateString("fr-FR")}</time></div>`).join("") : "Aucun utilisateur trouvé.";
+        };
+        const renderBoxes = (query = "") => {
+            const normalizedQuery = query.trim().toLocaleLowerCase();
+            const boxes = overview.boxesList.filter((box) => `${box.name} ${box.owner}`.toLocaleLowerCase().includes(normalizedQuery));
+            document.getElementById("adminBoxes").innerHTML = boxes.length ? boxes.map((box) => `<div class="admin-log-row"><div><strong>${escapeHtml(box.name)}</strong><span>${escapeHtml(box.owner)} · ${box.memberCount} membre(s) · ${box.files} fichier(s)</span></div><time>${escapeHtml(box.usedGb)} Go</time></div>`).join("") : "Aucune box trouvée.";
+        };
+        const renderActivities = (query = "") => {
+            const normalizedQuery = query.trim().toLocaleLowerCase();
+            const activities = overview.activities.filter((activity) => `${activity.type} ${activity.userEmail || "Système"} ${activity.boxName || ""}`.toLocaleLowerCase().includes(normalizedQuery));
+            document.getElementById("adminActivities").innerHTML = activities.length ? activities.map((activity) => `<div class="admin-log-row"><strong>${escapeHtml(activity.type)}</strong><span>${escapeHtml(activity.userEmail || "Système")} · ${escapeHtml(activity.boxName || "Sans box")} · ${new Date(activity.createdAt).toLocaleString("fr-FR")}</span></div>`).join("") : "Aucune activité trouvée.";
+        };
+        renderUsers();
+        renderBoxes();
+        renderActivities();
+        document.getElementById("adminUserSearch").addEventListener("input", (event) => renderUsers(event.target.value));
+        document.getElementById("adminBoxSearch").addEventListener("input", (event) => renderBoxes(event.target.value));
+        document.getElementById("adminActivitySearch").addEventListener("input", (event) => renderActivities(event.target.value));
     } catch (error) {
         appView.innerHTML = `<div class="error-box">${error.message}</div>`;
     }
@@ -824,10 +865,108 @@ async function renderMembersView() {
 async function renderSearchView(query) {
     try {
         const data = await requestJson(`/api/search?q=${encodeURIComponent(query)}`);
-            appView.innerHTML = `<div class="explorer-card"><div class="section-header"><h2>Résultats pour « ${query} »</h2></div><div class="member-list">${data.results.length ? data.results.map((file) => `<div class="member-row"><div><strong>${file.name}</strong><span>${file.path} · ${formatSize(file.size)}</span></div><a class="action-link" href="${window.familyDriveUrl(`/api/download?path=${encodeURIComponent(file.path)}`)}" target="_blank" rel="noreferrer">Ouvrir</a></div>`).join("") : "Aucun résultat."}</div></div>`;
+            appView.innerHTML = `<div class="explorer-card"><div class="section-header"><h2>Résultats pour « ${query} »</h2></div><div class="member-list">${data.results.length ? data.results.map((file) => `<div class="member-row"><div><strong>${file.name}</strong><span>${file.path} · ${formatSize(file.size)}${file.contentMatch ? ` · ${file.snippet || "Correspondance dans le contenu"}` : ""}</span></div><a class="action-link" href="${window.familyDriveUrl(`/api/download?path=${encodeURIComponent(file.path)}`)}" target="_blank" rel="noreferrer">Ouvrir</a></div>`).join("") : "Aucun résultat."}</div></div>`;
     } catch (error) {
         appView.innerHTML = `<div class="error-box">${error.message}</div>`;
     }
+}
+
+function detectAssistantSearch(query) {
+    const normalized = query.toLowerCase();
+    let type = "all";
+    if (/photo|image|jpg|jpeg|png|gif/.test(normalized)) type = "image";
+    if (/video|mp4|film/.test(normalized)) type = "video";
+    if (/pdf|document|doc|excel|texte|fichier/.test(normalized)) type = "document";
+    const cleanedQuery = normalized
+        .replace(/\b(trouve|chercher|cherche|montre|affiche|moi|mes|dans|la|le|les|des|fichiers?|photos?|images?|videos?|documents?|pdf)\b/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    return { type, query: cleanedQuery };
+}
+
+async function renderAssistantView() {
+    state.view = "assistant";
+    const messages = [];
+    appView.innerHTML = `
+        <section class="assistant-panel">
+            <div class="assistant-heading">
+                <div>
+                    <p class="eyebrow">CONVERSATION PRIVÉE</p>
+                    <h1>Assistant IA</h1>
+                    <p class="subtitle">Pose tes questions naturellement. L’assistant connaît uniquement la box active : <strong>${state.box?.name || ""}</strong>.</p>
+                </div>
+                <span class="assistant-scope">Box active uniquement</span>
+            </div>
+            <div id="assistantResults" class="assistant-results">
+                <div class="assistant-welcome">Bonjour ! Je peux discuter avec toi et retrouver les fichiers de cette box. Que veux-tu savoir ?</div>
+            </div>
+            <form id="assistantForm" class="assistant-form">
+                <input id="assistantQuery" name="query" type="search" placeholder="Écris ton message..." autocomplete="off" required>
+                <button class="auth-submit" type="submit">Envoyer</button>
+            </form>
+            <p class="assistant-hint">Tu peux demander « quels documents parlent de la maison ? » ou simplement discuter.</p>
+        </section>
+    `;
+
+    const results = document.getElementById("assistantResults");
+    const addMessage = (role, content, files = []) => {
+        const message = document.createElement("div");
+        message.className = `assistant-message assistant-message-${role}`;
+        const label = document.createElement("strong");
+        label.textContent = role === "user" ? "Vous" : "Assistant";
+        const text = document.createElement("p");
+        text.textContent = content;
+        message.append(label, text);
+        if (files.length) {
+            const fileList = document.createElement("div");
+            fileList.className = "assistant-file-list";
+            files.forEach((file) => {
+                const link = document.createElement("a");
+                link.className = "action-link";
+                link.href = window.familyDriveUrl(`/api/download?path=${encodeURIComponent(file.path)}`);
+                link.target = "_blank";
+                link.rel = "noreferrer";
+                link.textContent = `Ouvrir ${file.path}`;
+                fileList.append(link);
+            });
+            message.append(fileList);
+        }
+        results.append(message);
+        results.scrollTop = results.scrollHeight;
+        return message;
+    };
+
+    document.getElementById("assistantForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const input = document.getElementById("assistantQuery");
+        const button = event.currentTarget.querySelector("button");
+        const query = input.value.trim();
+        if (!query) return;
+        messages.push({ role: "user", content: query });
+        addMessage("user", query);
+        input.value = "";
+        input.disabled = true;
+        button.disabled = true;
+        const loading = addMessage("assistant", "Je réfléchis...");
+        try {
+            const data = await requestJson("/api/assistant/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ messages })
+            });
+            loading.remove();
+            messages.push({ role: "assistant", content: data.message });
+            addMessage("assistant", data.message, data.files || []);
+        } catch (error) {
+            loading.remove();
+            messages.pop();
+            addMessage("assistant", error.message);
+        } finally {
+            input.disabled = false;
+            button.disabled = false;
+            input.focus();
+        }
+    });
 }
 
 function switchView(view) {
@@ -856,6 +995,11 @@ function switchView(view) {
 
     if (view === "members") {
         renderMembersView();
+        return;
+    }
+
+    if (view === "assistant") {
+        renderAssistantView();
         return;
     }
 

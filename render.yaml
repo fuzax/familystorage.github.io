@@ -26,6 +26,10 @@ services:
         value: /var/data/activity.json
       - key: SHARES_DB_PATH
         value: /var/data/shares.json
+      - key: AI_MODEL
+        value: gpt-4o-mini
+      - key: AI_API_KEY
+        sync: false
     disk:
       name: familydrive-data
       mountPath: /var/data

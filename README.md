@@ -59,3 +59,15 @@ Pour activer la catégorie Administration pour un compte, ajoute son adresse e-m
 ```
 
 La catégorie reste cachée pour les autres comptes. Elle affiche les statistiques globales et le journal des activités. Le fichier peut être déplacé avec la variable `ADMIN_EMAILS_PATH`.
+
+## Assistant conversationnel
+
+L’assistant IA converse avec l’utilisateur et peut rechercher dans le contenu des fichiers de la box active. Les fichiers des autres box ne sont jamais ajoutés à son contexte.
+
+Pour l’activer, configure une clé API OpenAI ou d’un service compatible avant de lancer le serveur :
+
+```bash
+AI_API_KEY=ta-cle npm start
+```
+
+Variables facultatives : `AI_MODEL` (par défaut `gpt-4o-mini`) et `AI_BASE_URL` (par défaut `https://api.openai.com/v1`). En production, ajoute `AI_API_KEY` dans les variables secrètes de l’hébergeur, jamais dans le frontend.
